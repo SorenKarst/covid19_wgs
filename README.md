@@ -21,5 +21,5 @@ find \
   
 ln -s \
   $CONDA_PREFIX/covid19_wgs/covid19_wgs.sh \
-  $CONDA_PREFIX/bin/longread_umi
+  $CONDA_PREFIX/bin/covid19_wgs
 ```
