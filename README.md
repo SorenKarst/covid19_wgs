@@ -39,10 +39,23 @@ mamba create \
  pangolin=3.1.11 \
  -c bioconda
  
-# Clone covid19_wgs and setup links
+# Clone covid19_wgs and artic
 conda activate covid19_wgs
-git clone https://github.com/SorenKarst/covid19_wgs.git $CONDA_PREFIX/covid19_wgs
+git clone \
+  https://github.com/SorenKarst/covid19_wgs.git \
+  $CONDA_PREFIX/covid19_wgs
 
+git clone \
+  https://github.com/artic-network/artic-ncov2019.git \
+  $CONDA_PREFIX/artic-ncov2019
+  
+# Copy custom schemes into artic-ncov2019
+cp \
+  -r \
+  $CONDA_PREFIX/covid19_wgs/schemes/V1M \
+  $CONDA_PREFIX/artic-ncov2019/primer_schemes/nCoV-2019/  
+
+# Make scripts excutable
 mkdir -p $CONDA_PREFIX/bin
 find \
   $CONDA_PREFIX/covid19_wgs/ \
