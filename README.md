@@ -7,7 +7,9 @@ Pipeline for COVID-19 WGS consensus generation and QC. Minimalistic wrapper arou
 * Install [mamba package manager](https://github.com/mamba-org/mamba).
 * Create conda environments.
 ```bash
-# Environments are split to ensure easy update
+# NOTES:
+# Environments are split to ensure easy update.
+# Artic should be updated when major changes in ONT chemistry or basecalling occures.
 # Pangolin should be regularly updated for correct and current classification.
 # Nextclade should be updated when major bug fixes og changes are implemented.
 # Nextstrain probably won't need updating. It is only used for tree visualization.
