@@ -1,0 +1,65 @@
+R-packages
+```{r}
+library(tidyverse)
+```
+
+Import bed fil
+
+```{r}
+b <- read_tsv(
+  "/VFU/SMKA/software/miniconda3/envs/artic/artic-ncov2019/primer_schemes/nCoV-2019/V1M/nCoV-2019.scheme.bed",
+  col_names = F
+  )
+```
+
+Format bed file.
+
+```{r}
+bf <- 
+  b %>%
+  transmute(
+    ref = X1,
+    pool_id = gsub("nCoV-2019_", "", X5),
+    amplicon_id = gsub("SARSCoV2120_|_LEFT|_RIGHT", "", X4) %>% as.integer(),
+    amplicon_or = gsub(".*_", "", X4),
+    start = X2,
+    end = X3
+  ) %>%
+  group_by(
+    ref,
+    pool_id,
+    amplicon_id,
+    amplicon_or
+  ) %>%
+  filter(
+    (amplicon_or == "LEFT" & end == max(end)) | (amplicon_or == "RIGHT" & start == max(start))
+  ) %>%
+  group_by(
+    ref,
+    pool_id,
+    amplicon_id
+  ) %>%
+  summarise(
+    s = min(end),
+    e = max(start)
+  ) %>%
+  ungroup() %>%
+  transmute(
+    ref,
+    start = s + 1,
+    end = e - 1,
+    amplicon_id,
+    pool_id,
+    strand = "+"
+  )
+```
+Export bedfile
+
+```{r}
+write_tsv(
+  bf,
+  "nCoV-2019.insert.bed",
+  col_names = F
+)
+```
+
