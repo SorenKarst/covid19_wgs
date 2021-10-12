@@ -1,0 +1,1363 @@
+---
+title: "COVID-19 WGS QC"
+output:
+  html_document:
+    fig_caption: yes
+---
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggsci)
+library(cowplot)
+library(kableExtra)
+library(DT)
+library(ggtree)
+library(Biostrings)
+options(scipen=999)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Report settings
+batch_dir <- rstudioapi::selectDirectory(path = getwd())
+yield_filter_factor <- 10
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Import metadata
+m <- read_tsv(
+  "metadata.tsv"
+) %>%
+  mutate(
+    sample_category = ifelse(grepl("nc_|pc_", str_to_lower(sample_name)), "control", "sample"),
+  )  %>%
+  {
+    if(!("treatment" %in% names(.))){
+      mutate(., treatment = batch)
+    } else {.}
+  }
+
+batch_list <- 
+  m$batch %>%
+  unique()
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Import coverage data
+
+# Column names
+pcc <- c(
+  "barcode_id",
+  "ref",
+  "start",
+  "end",
+  "amplicon_id",
+  "pool_id",
+  "strand",
+  "amplicon_pos",
+  "coverage"
+)
+
+# List of coverage files
+pcl <- list.files(
+  path = paste(batch_dir, "/", batch_list, sep = ""),
+  pattern = "coverage.tsv",
+  recursive = T,
+  full.names = T
+) %>%
+  set_names(., sub("/coverage.tsv", "", .) %>% gsub(".*/", "", .))
+
+# Import and format coverage files
+# Coverage tallys is pr. amplicon. Due to tiled amplicon setup overlapping positions are tallied twice.
+pc <- 
+  pcl %>%
+  lapply(
+    .,
+    function(file){read_tsv(file, col_names = pcc)}
+  ) %>%
+  bind_rows(
+    .id = "batch"
+  ) %>%
+  transmute(
+    batch,
+    barcode_id,
+    start,
+    end,
+    amplicon_id,
+    pool_id,
+    position = start + amplicon_pos - 1,
+    coverage
+  )
+
+# Calculate reference length
+ref_length <- max(pc$end) - min(pc$start)
+
+# Position-wise coverage
+# Ensure no duplicated positions and calculate position wise normalized coverage 
+pcn <- 
+  pc %>%
+  group_by(batch, barcode_id, position) %>%
+  summarise(
+    coverage = mean(coverage),
+    amplicon_ol = paste(amplicon_id, sep = ";", collapse = ";")
+  ) %>%
+  group_by(batch, barcode_id) %>%
+  mutate(
+    cov_norm = coverage/sum(coverage)*(max(position)-min(position))
+  )
+
+# Amplicon-wise coverage
+# Remove both duplicated positions and calculate amplicon wise mean and normalized coverage 
+acn <-
+  pc %>%
+  group_by(batch, barcode_id, position) %>%
+  filter(n() == 1) %>%
+  group_by(batch, barcode_id, amplicon_id) %>%
+  summarise(
+    cov_total = sum(coverage),
+    start = min(position),
+    end = max(position)
+  ) %>%
+  group_by(batch, barcode_id) %>%
+  mutate(
+    cov_mean = cov_total/(end-start),
+    cov_norm = cov_total/sum(cov_total) * n()
+  )
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Import nextclade classification
+nl <- list.files(
+  path = paste(batch_dir, "/", batch_list, sep = ""),
+  pattern = "nextclade.tsv",
+  recursive = T,
+  full.names = T
+  ) %>%
+   set_names(., sub("/nextclade.tsv", "", .) %>% gsub(".*/", "", .))
+
+n <- 
+  nl %>%
+  lapply(
+    .,
+    function(file){read_tsv(file)}
+  ) %>%
+  bind_rows(
+    .id = "batch"
+  ) %>%
+  mutate(
+    barcode_id = gsub("/.*", "", seqName), 
+  ) %>%
+  transmute(
+    batch,
+    barcode_id,
+    classification = gsub(".*\\(|\\)|,.*", "", clade),
+    substitutions,
+    deletions,
+    insertions,
+    n_count = totalMissing,
+    nxcl_quality = qc.overallStatus,
+    missing
+  ) %>%
+  {
+    ntbl <- .
+    left_join(
+      ntbl,
+      ntbl$missing %>%
+        str_split(",") %>%
+        set_names(paste(ntbl$batch, ntbl$barcode_id, sep = ";")) %>%
+        lapply(
+          function(m){
+            tibble(miss_range = m)
+          }
+        ) %>%
+        bind_rows(.id = "id") %>%
+        mutate(
+          start = str_split(miss_range, "-") %>%
+            lapply(., function(x){as.integer(x) %>% min()}) %>% unlist(),
+          end = str_split(miss_range, "-") %>%
+            lapply(., function(x){as.integer(x) %>% max()}) %>% unlist(),
+        ) %>%
+        group_by(id) %>%
+        filter(end - start + 1 < 3) %>%
+        summarise(
+          mixed_n = n(),
+          mixed_position = paste(miss_range, collapse = ",")
+        ) %>%
+        ungroup() %>%
+        separate(
+          id,
+          c("batch", "barcode_id"),
+          ";"
+        ),
+      by = c("batch", "barcode_id")
+    )
+  } %>%
+  left_join(
+    m,
+    .,
+    by = c("barcode_id", "batch")
+  ) %>%
+  mutate(
+    n_quality =
+      case_when(
+        grepl("nc", str_to_lower(sample_name)) & n_count/ref_length < 0.25 ~ "NC_fail",
+        grepl("nc", str_to_lower(sample_name)) & (n_count/ref_length >= 0.25 | is.na(n_count))~ "NC_pass",
+        is.na(n_count) ~ "missing_filter",
+        n_count <= 200 ~ "HQ",
+        n_count <= 3000 ~ "MQ",
+        T ~ "n_filter"
+      ),
+    mixed_quality = 
+      case_when(
+        mixed_n > 3 ~ "mixed_filter",
+        is.na(nxcl_quality) ~ as.character(NA), 
+        T ~ "pass"
+      )
+  )
+```
+
+```{r}
+# Pangolin lineage
+pl <- list.files(
+  path = paste(batch_dir, "/", batch_list, sep = ""),
+  pattern = "pangolin.csv",
+  recursive = T,
+  full.names = T
+  ) %>%
+   set_names(., sub("/pangolin.csv", "", .) %>% gsub(".*/", "", .))
+
+p <- 
+  pl %>%
+  lapply(
+    .,
+    function(file){read_csv(
+      file
+      )}
+  ) %>%
+  bind_rows(
+    .id = "batch"
+  ) %>%
+  mutate(
+    barcode_id = gsub("/.*", "", taxon), 
+  ) %>%
+  select(
+    batch,
+    barcode_id,
+    pango_lineage = lineage,
+    scorpio_lineage = scorpio_call
+  )
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Yield over time
+ytl <- list.files(
+  path = paste(batch_dir, "/", batch_list, sep = ""),
+  pattern = "yield.tsv",
+  recursive = T,
+  full.names = T
+  ) %>%
+  set_names(., sub("/yield.tsv", "", .) %>% gsub(".*/", "", .))
+
+yt <- 
+  ytl %>%
+  lapply(
+    .,
+    function(file){read_tsv(file)}
+  ) %>%
+  bind_rows(
+    .id = "batch"
+  ) %>%
+  full_join(
+    m %>% select(batch, barcode_id, sample_name, sample_category),
+    .,
+    by = c("batch", "barcode_id")
+  ) %>%
+  mutate(
+    reads_n = ifelse(is.na(reads_n), 0, reads_n),
+    yield_bp = ifelse(is.na(yield_bp), 0, yield_bp),
+    date_time = as_datetime(date_time)
+  )
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Length distribution
+ll <- list.files(
+  path = paste(batch_dir, "/", batch_list, sep = ""),
+  pattern = "length.tsv",
+  recursive = T,
+  full.names = T
+  ) %>%
+  set_names(., sub("/length.tsv", "", .) %>% gsub(".*/", "", .))
+
+l <- 
+  ll %>%
+  lapply(
+    .,
+    function(file){read_tsv(file)}
+  ) %>%
+  bind_rows(
+    .id = "batch"
+  ) %>%
+  mutate(
+    barcode_classification = case_when(
+      barcode_id == "unclassified" ~ "None",
+      paste(batch, barcode_id, sep = "_") %in% paste(m$batch, m$barcode_id, sep = "_") ~ "Used",
+      T ~ "Unused"
+    )
+  )
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Import trees
+tl <- list.files(
+  path = paste(batch_dir, "/", batch_list, sep = ""),
+  pattern = "consensus_tree.nwk",
+  recursive = T,
+  full.names = T
+  ) %>%
+  set_names(., sub("/consensus_tree.nwk", "", .) %>% gsub(".*/", "", .))
+
+tree <- 
+  tl %>%
+  lapply(
+    .,
+    function(file){
+      tree <- read.tree(file)
+      tree$tip.label <- sub("/.*", "", tree$tip.label)
+      return(tree)
+      }
+  )
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#Import consensus sequences
+sl <- list.files(
+  path = paste(batch_dir, "/", batch_list, sep = ""),
+  pattern = "^consensus.fa",
+  recursive = T,
+  full.names = T
+  ) %>%
+  set_names(., sub("/consensus.fa", "", .) %>% gsub(".*/", "", .))
+
+s <- 
+  sl %>%
+  lapply(
+    .,
+    function(file){
+      seq <- readDNAStringSet(file)
+      names(seq) <- names(seq) %>%
+        gsub("/.*", "", .)
+      return(seq)
+      }
+  ) %>%
+  DNAStringSetList() %>%
+  unlist()
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Store data
+# save.image(file = "data.RData")
+```
+
+## Processing summary
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Yield time statistics
+yt_start <-
+  yt %>%
+  group_by(batch) %>%
+  summarise(
+    start_time = min(date_time, na.rm = T) %>%
+      as_datetime()
+  )
+
+ytc <- 
+  yt %>%
+  left_join(yt_start, by = "batch") %>%
+  mutate(
+    barcode_classification = case_when(
+      barcode_id == "unclassified" ~ "None",
+      paste(batch, barcode_id, sep = "_") %in% paste(m$batch, m$barcode_id, sep = "_") ~ "Used",
+      T ~ "Unused"
+    ),
+    date_time = if_else(is.na(date_time), start_time, date_time)
+  ) %>%
+  group_by(batch, barcode_classification) %>%
+  arrange(date_time) %>%
+  mutate(
+    cum_reads_n = cumsum(reads_n),
+    cum_yield_bp = cumsum(yield_bp),
+    minutes = (date_time - start_time) %>% as.integer(.)/60
+  )
+```
+
+```{r seq_summary_tab, fig.cap="\\label{fig:seq_summary_tab} Sequencing summary"}
+# Compile sequencing summary table
+seqsum_t1 <-
+  ytc %>%
+  group_by(batch) %>%
+  summarise(
+    yield_total = (sum(yield_bp)/1000000000) %>% round(1),
+    yield_used_bp = (sum(ifelse(barcode_id %in% m$barcode_id, yield_bp, 0))/1000000000) %>% round(1),
+    yield_unused_bp = (sum(ifelse(!(barcode_id %in% c(m$barcode_id, "unclassified")), yield_bp, 0))/1000000000) %>% round(1),
+    yield_none_bp = (sum(ifelse(barcode_id == "unclassified", yield_bp, 0)/1000000000)) %>% round(1),
+    yield_pr_sample_bp = NA,
+    total_reads_n = (sum(reads_n)/1000000) %>% round(1),
+    duration = max(minutes) - min(minutes)
+  ) %>%
+  ungroup() %>%
+  set_names(c("Batch", "Yield total (Gbp)", "Yield used barcodes (Gbp)", "Yield unused barcodes (Gbp)", "Yield none barcodes (Gbp)","Yield pr. sample (Mbp)", "Total reads (mio)", "Duration (min)")) %>%
+  left_join(
+    m %>%
+      group_by(batch, sample_category) %>%
+      summarise(samples_n = n()) %>%
+      spread(key = sample_category, value = samples_n) %>%
+      {if("sample" %in% names(.)) . else {mutate(., sample = 0)}} %>%
+      {if("control" %in% names(.)) . else {mutate(., control = 0)}}  %>%
+      dplyr::rename(`Batch` = batch, `Samples (n)` = sample, `Controls (n)` = control),
+    by = "Batch"
+  ) %>%
+  mutate(
+    `Yield pr. sample (Mbp)` =
+      (`Yield used barcodes (Gbp)`/(`Samples (n)` + `Controls (n)`)*1000) %>%
+      round(1),
+    yield_check = ifelse(
+      `Yield used barcodes (Gbp)`/(`Samples (n)` + `Controls (n)`) > 0.06,
+      "white",
+      "#DC0000B2"
+      ),
+    unused_check = ifelse(
+      `Yield unused barcodes (Gbp)`/`Yield total (Gbp)` < 0.01,
+      "white",
+      "#DC0000B2"
+      ),
+    none_check = ifelse(
+      `Yield none barcodes (Gbp)`/`Yield total (Gbp)` < 0.5,
+      "white",
+      "#DC0000B2"
+      )
+  ) %>%
+  {
+    tbl <- .
+    kbl(tbl %>% select(-yield_check, -unused_check, -none_check)) %>%
+      kable_minimal(c("hover")) %>%
+      column_spec(
+        4,
+        background = tbl$unused_check
+      ) %>%
+      column_spec(
+        5,
+        background = tbl$none_check
+      ) %>%
+      column_spec(
+        6,
+        background = tbl$yield_check
+      )
+  } %>%
+  kableExtra::footnote(
+    general = "\\tiny{´Insufficient yield warning (red Yield pr. sample) is active if mean read coverage <60 Mbp/sample (< 2000x). Insufficient yield can be due to short sequencing duration or poor sequencing run.}", escape = FALSE 
+  )
+
+seqsum_t1
+```
+
+
+```{r yield_plot, fig.cap="\\label{fig:seq_summary_plot} Cumulative Demultiplexed sequencing yield over duration of run"}
+# Yield over time plot
+seqsum_p1 <- 
+  ggplot(
+  ytc,
+  aes(
+    x = minutes,
+    y = cum_yield_bp/1000,
+    color = barcode_classification
+  )
+) + 
+  geom_line() +
+  scale_color_npg() +
+  theme_classic() +
+  theme(legend.position = "bottom") +
+  labs(
+    y = "Yield (Gbp)",
+    x = "Time (minutes)",
+    color = "Barcode"
+  ) +
+  facet_grid(
+    rows = vars(batch)
+  )
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Length distribution plot
+seqsum_p2 <-
+  ggplot(
+    l,
+    aes(
+      x = length_bp,
+      y = count,
+      fill = barcode_classification
+    )
+  ) + 
+  geom_col() +
+  scale_fill_npg() +
+  theme_classic() +
+  xlim(0, 2000) +
+  theme(legend.position = "bottom") +
+  labs(
+    y = "Count (n)",
+    x = "Fragment length (bp)",
+    fill = "Barcode"
+  ) +
+  facet_grid(
+    rows = vars(batch)
+  )
+  
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Combine plots
+plot_grid(
+  seqsum_p1,
+  seqsum_p2,
+  ncol = 2,
+  align = 'v',
+  axis = 'lr'
+  )
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Barcode sample list
+seqsum_t2 <-
+  ytc %>%
+  group_by(batch, barcode_id, barcode_classification) %>%
+  summarise(
+    total_yield_bp = (sum(yield_bp)/1000000) %>% round(1),
+    total_reads_n = (sum(reads_n)) %>% round(1),
+  ) %>%
+  ungroup() %>%
+  set_names(c("Batch", "Barcode ID", "Barcode classification", "Yield (Mbp)", "Total reads (n)")) %>%
+  left_join(
+    m,
+    by = c("Batch" = "batch", "Barcode ID" = "barcode_id")
+  )
+  
+datatable(seqsum_t2)
+```
+
+### Quality statistics
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Calculate yield (BP) and define filter settings
+y <-
+  pcn %>%
+  group_by(barcode_id, batch) %>%
+  summarise(
+    yield_bp = sum(coverage)
+    ) %>%
+  left_join(
+    n,
+    .,
+    by = c("batch", "barcode_id")
+  ) %>%
+  left_join(
+    p,
+    by = c("batch", "barcode_id") 
+  ) %>%
+  mutate(
+    rep = 1:n(),
+    yield_bp = ifelse(is.na(yield_bp), as.numeric(0), yield_bp)
+  ) 
+
+yc <- 
+  y %>%
+  filter(
+    sample_category == "control",
+    grepl("nc_", str_to_lower(sample_name)),
+    !is.na(n_count)
+  ) %>%
+  group_by(
+    batch, treatment
+  ) %>%
+  slice_max(
+    yield_bp,
+    n = 1
+  ) %>%
+  mutate(
+    yield_cutoff = yield_bp * yield_filter_factor
+  ) %>%
+  {if(nrow(.) == 0){
+    tibble(
+      batch = unique(y$batch),
+      treatment = unique(y$treatment),
+      yield_cutoff = 0
+    )
+  } else .}
+
+yf <- 
+  y %>%
+  left_join(
+    yc[c("treatment", "yield_cutoff")],
+    by = "treatment"
+  ) %>%
+  mutate(
+    filter = 
+      case_when(
+        grepl("nc_", str_to_lower(sample_name)) ~ n_quality,
+        n_quality == "missing_filter" ~ "missing_filter",
+        yield_bp < yield_cutoff ~ "yield_filter",
+        mixed_n > 3 ~ "mix_filter",
+        yield_bp >= yield_cutoff ~ n_quality,
+        is.na(yield_cutoff) ~ n_quality
+      )
+  )
+
+yfl <- c("HQ", "MQ", "n_filter", "missing_filter", "mix_filter", "yield_filter", "NC_fail", "NC_pass")
+yfc <- c("#00A087FF", "#4DBBD5FF", "#F39B7FFF", "gray85", "gray75", "gray55", "deeppink", "mediumpurple1")
+yfo <- 
+  tibble(
+    levels = yf$treatment,
+    order = parse_number(yf$treatment)
+  ) %>%
+  arrange(order) %>%
+  .$levels %>%
+  unique()
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+cp1 <- ggplot(
+  yf,
+  aes(
+    "Samples",
+    yield_bp/1000000,
+    color = filter
+  )
+) +
+  geom_jitter(width = 0.05) +
+  geom_point(
+    data = yc,
+    aes(
+      x = "Samples",
+      y = yield_cutoff/1000000
+    ),
+    shape=95,
+    size=10,
+    color = "black"
+  ) +
+  facet_grid(
+    factor(
+      treatment,
+      levels = yfo)~.
+      ) +
+  scale_y_log10() +
+  scale_color_manual(
+    values = yfc,
+    breaks = yfl
+    ) +
+  labs(
+    x = NULL,
+    y = "Yield (Mbp)",
+    color = "QC filter"
+  ) +
+  theme(legend.position = "none") 
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+qp1 <- ggplot(
+  yf,
+  aes(
+    "Samples",
+    fill = factor(filter, levels = rev(yfl))
+  )
+) +
+  geom_bar() +
+  geom_text(
+    aes(
+      label = ..count..
+      ),
+    stat = "count",
+    colour = "white",
+    position=position_stack(vjust=0.5)
+    ) +
+  facet_grid(
+    factor(
+      treatment,
+      levels = yfo)~.
+      ) +
+  scale_fill_manual(
+    values = yfc,
+    breaks = yfl,
+    drop = FALSE
+  ) +
+  labs(
+    x = NULL,
+    y = "Number of samples",
+    fill = "QC filter"
+  )
+```
+
+```{r qc_summary_plot, fig.cap="\\label{fig:qc_overview_plot} QC summary"}
+cpqp1 <- plot_grid(
+  cp1,
+  qp1,
+  ncol = 2,
+  align = 'v',
+  axis = 'lr', 
+  labels = c("a", "b")
+  )
+
+cpqp1
+```
+
+**Filters**
+
+* HQ:             < 200xN
+* MQ:             < 3000xN
+* n_filter:       >= 3000xN
+* yield_filter:   <`r yield_filter_factor`x max(NC yield)
+* missing_filter: No aligned genome (missing or poor quality)
+* mix_filter:     > 3 ambiguous bases
+* NC_pass:        < 75% genome coverage
+* NC_fail:        > 75% genome coverage
+
+
+### Control coverage QC
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Overall statistics
+cs <-
+  yf %>%
+  filter(grepl("nc", str_to_lower(sample_name))) %>%
+  transmute(
+    batch,
+    treatment,
+    barcode_id,
+    sample_name,
+    yield_bp = (yield_bp/1000000) %>% round(1),
+    genome_coverage = (100-n_count/ref_length*100) %>% round(1),
+    classification,
+    filter
+  ) %>%
+  mutate(
+    color =
+      case_when(
+        filter == "NC_pass" ~ "mediumpurple",
+        filter == "NC_fail" ~ "deeppink",
+        T ~ "#F39B7FFF"
+        )
+  )
+
+if(nrow(cs) != 0){
+  cs %>%
+    ungroup() %>%
+    select(treatment, sample_name, barcode_id, yield_bp, genome_coverage, classification, filter) %>%
+    set_names(c("Group", "Sample Name", "Barcode ID", "Yield (Mbp)", "Genome coverage (%)", "Variant", "QC status")) %>%
+    kbl() %>%
+    kable_minimal(c("hover")) %>%
+    column_spec(
+      7,
+      background = cs$color
+    ) %>%
+    kableExtra::footnote(
+      general = "\\tiny{Negative control (NC) can either pass (NC_pass) or fail (NC_fail) in the filter. A NC fails if > 75% of the genome generates consensus.}", escape = FALSE 
+    ) 
+}
+
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+## amplicon visualization track
+as <-
+  acn %>%
+  mutate(
+    pool_id = ifelse(amplicon_id %% 2, 2, 1)
+  ) %>%
+  distinct_at(.vars = vars("batch", "amplicon_id", "start", "end", "pool_id")) %>%
+  mutate(
+    template_content = 
+      case_when(
+        T ~ "Present"
+      )
+  )
+  
+ap <- ggplot(
+  as,
+  aes(
+    x = start,
+    xend = end,
+    y = as.factor(pool_id),
+    yend = as.factor(pool_id)
+  )
+) +
+  geom_segment(
+    aes(color = template_content)
+  ) +
+  geom_text(
+    aes(
+      label = amplicon_id,
+      x = (end - start)/2 + start,
+      color = template_content
+    ),
+    vjust = 1,
+    size = 2
+  ) + 
+  scale_color_manual(
+    breaks = c("Missing", "Present"),
+    values =  c("red", "black")
+  ) +
+  scale_x_continuous(
+    limits = c(1, 30000)
+  ) +
+  facet_grid(rows = vars(batch)) +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    panel.border = element_rect(colour = "black", fill=NA, size=1),
+    axis.text.x=element_blank(),
+    axis.ticks.x=element_blank(),
+    axis.text.y=element_blank(),
+    axis.ticks.y=element_blank()
+  ) +
+  labs(
+    y = NULL,
+    x = "Genome position"
+  )
+
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Control coverage plot
+control_n <-
+  filter(yf, sample_category == "control") %>%
+  nrow()
+
+if(control_n != 0){
+acny <-
+  acn %>%
+  left_join(
+    yf,
+    .,
+    by = c("batch", "barcode_id")
+  )
+
+pcc <- ggplot(
+  acny %>%
+    filter(sample_category == "control") %>%
+    mutate(facet_id = paste(treatment, barcode_id, sep = "-")),
+  aes(
+    x = start,
+    xend = end,
+    y = cov_mean,
+    yend = cov_mean,
+    color = cov_mean
+  )
+) +
+  geom_segment(
+    size=0.5
+    ) +
+  scale_y_log10() +
+  scale_colour_viridis_c(
+    trans = "log10",
+    direction = 1,
+    breaks = c(1, 20, 100, 1000, 10000),
+    limits = c(1, NA),
+    option = "turbo"
+  ) +
+  geom_hline(
+    yintercept = 20,
+    color = "red"
+  ) +
+  geom_text(
+    data = cs %>%
+    mutate(facet_id = paste(treatment, barcode_id, sep = "-")),
+    aes(
+      x = ref_length/2,
+      xend = NULL,
+      y = 10000,
+      yend = NULL,
+      label = paste(
+        "Sample name: ",
+        sample_name,
+        ", Yield: ",
+        yield_bp,
+        "Mbp, Genome Coverage: ",
+        genome_coverage, 
+        "%, Filter: ",
+        filter
+        )
+    ),
+    size = 2,
+    color = cs$color
+  ) +
+  annotate(
+    geom="text",
+    x=0,
+    y=30,
+    label="20x",
+    color="red"
+  ) +
+  facet_wrap(
+    facets = vars(facet_id),
+    ncol = 2, 
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "bottom",
+    panel.border = element_rect(colour = "black", fill=NA, size=1)
+  ) +
+  labs(
+    y = "Read coverage",
+    x = NULL, 
+    color = "Coverage"
+  )
+
+pcc
+
+ggsave("control_coverage.png", pcc,height = control_n*2 + 2, width = 10)  
+}
+```
+
+### Sample coverage QC
+
+**Batch overview**
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+treatment_n <-
+  distinct(yf, treatment) %>%
+  nrow()
+
+acny <-
+  acn %>%
+  left_join(
+    yf,
+    .,
+    by = c("batch", "barcode_id")
+  )
+
+scp1 <- ggplot(
+  acny,
+  aes(
+    x = (end - start)/2+start,
+    y = cov_mean,
+    color = filter,
+    group = barcode_id
+  )
+) +
+  geom_point(aes(x = jitter((end - start)/2+start, 0.4))) +
+  geom_hline(
+    yintercept = 20,
+    color = "grey80"
+  ) +
+  annotate(
+    geom="text",
+    x=30000,
+    y=30,
+    label="20x",
+    color="grey80"
+  ) +
+  facet_grid(
+    factor(
+      treatment,
+      levels = yfo)~.
+      ) +
+  scale_x_continuous(
+    limits = c(1, 30000)
+  ) +
+  scale_y_log10() +
+  scale_color_manual(
+    values = yfc,
+    breaks = yfl, 
+    drop = FALSE
+    )  +
+  theme_classic() +
+  theme(
+    legend.position = "top",
+    panel.border = element_rect(colour = "black", fill=NA, size=1)
+  ) +
+  labs(
+    y = "Read coverage",
+    x = NULL, 
+    color = "Quality filter"
+  )
+
+scp1ap <- plot_grid(
+  scp1,
+  ap,
+  ncol = 1,
+  rel_heights = c(treatment_n*2/(treatment_n*2 + 1), 1/(treatment_n*2 + 1)),
+  align = 'v',
+  axis = 'lr'
+  )
+
+scp1ap
+
+ggsave("sample_coverage_overview.png", scp1ap, height = treatment_n*2 + 1, width = 10)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+pcny <-
+  pcn %>%
+  left_join(
+    yf,
+    .,
+    by = c("batch", "barcode_id")
+  )
+
+scp2 <- ggplot(
+  pcny %>%
+    group_by(barcode_id, batch) %>%
+    sample_frac(0.05),
+  aes(
+    x = position,
+    y = cov_norm,
+    color = filter,
+    group = barcode_id
+  )
+) +
+  geom_line(
+    alpha = 0.4
+  ) +
+  geom_hline(
+    yintercept = 0.1,
+    color = "grey80"
+  ) +
+  annotate(
+    geom="text",
+    x=30000,
+    y=0.2,
+    hjust = 0,
+    label="0.1x",
+    color="grey80"
+  ) +
+  facet_grid(
+    factor(
+      treatment,
+      levels = yfo)~.
+      ) +
+  scale_x_continuous(
+    limits = c(1, 30000)
+  ) +
+  scale_y_log10() +
+  scale_color_manual(
+    values = yfc,
+    breaks = yfl
+    )  +
+  theme_classic() +
+  theme(
+    legend.position = "top",
+    panel.border = element_rect(colour = "black", fill=NA, size=1)
+  ) +
+  labs(
+    y = "Read coverage",
+    x = NULL, 
+    color = "Quality filter"
+  )
+
+scp2ap <- plot_grid(
+  scp2,
+  ap,
+  ncol = 1,
+  rel_heights = c(treatment_n*2/(treatment_n*2 + 1), 1/(treatment_n*2 + 1)),
+  align = 'v',
+  axis = 'lr'
+  )
+
+scp2ap
+
+ggsave("sample_coverage_norm_overview.png", scp2ap, height = treatment_n*2 + 1, width = 10)
+```
+
+
+**Subsample view**
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+pcny_sample <-
+  yf %>%
+  filter(filter %in% c("HQ", "MQ", "n_filter", "yield_filter")) %>%
+  group_by(treatment, filter) %>%
+  slice_sample(n = 2, replace = F) %>%
+  ungroup() %>%
+  select(batch, barcode_id) %>%
+  left_join(
+    pcny,
+    by = c("batch", "barcode_id")
+  )
+
+scp3 <- ggplot(
+  pcny_sample,
+  aes(
+    x = position,
+    y = cov_norm,
+    color = filter,
+    group = barcode_id
+  )
+) +
+  geom_line(size=0.2) +
+  geom_hline(
+    yintercept = 0.1,
+    color = "grey80"
+  ) +
+  annotate(
+    geom="text",
+    x=30000,
+    y=0.2,
+    hjust = 0,
+    label="0.1x",
+    color="grey80"
+  ) +
+    facet_grid(
+    factor(
+      treatment,
+      levels = yfo)~.
+      ) +
+  scale_y_log10() +
+  scale_color_manual(
+    values = yfc,
+    breaks = yfl,
+    drop = F
+    ) +
+  theme_classic() +
+  theme(
+    legend.position = "top",
+    panel.border = element_rect(colour = "black", fill=NA, size=1)
+  ) +
+  labs(
+    y = "Read coverage",
+    x = NULL, 
+    color = "Quality filter"
+  )
+
+scp3ap <- plot_grid(
+  scp3,
+  ap,
+  ncol = 1,
+  rel_heights = c(treatment_n*2/(treatment_n*2 + 1), 1/(treatment_n*2 + 1)),
+  align = 'v',
+  axis = 'lr'
+  )
+
+scp3ap
+
+ggsave("sample_coverage_norm_sub.png", scp3ap, height = treatment_n*2 + 1, width = 10)
+```
+
+
+### Sample ambiguous bases QC
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Determine SNP frequencies from HQ/MQ genomes
+snv <- n %>%
+  select(
+    substitutions,
+    deletions,
+    insertions,
+    missing,
+    batch,
+    barcode_id
+  ) %>%
+  apply(
+    1,
+    function(row){
+      bind_rows(
+        tibble(
+          batch = row[5],
+          barcode_id = row[6],
+          snp_type = "sub",
+          snp = str_split(row[1], ",") %>% unlist()
+        ),
+        tibble(
+          batch = row[5],
+          barcode_id = row[6],
+          snp_type = "del",
+          snp =
+            if(!is.na(row[2])){
+              str_split(row[2], ",") %>%
+                unlist() %>%
+                lapply(
+                  function(m){
+                    str_split(m, "-") %>%
+                      unlist() %>%
+                      as.integer() %>%
+                      {seq(min(.), max(.), by = 1)} 
+                  }
+                ) %>%
+                unlist() %>%
+                paste(., "del", sep ="")           
+            } else {
+              NA
+            }
+        ),
+        tibble(
+          batch = row[5],
+          barcode_id = row[6],
+          snp_type = "ins",
+          snp = str_split(row[3], ",") %>% unlist()
+        ),
+        tibble(
+          batch = row[5],
+          barcode_id = row[6],
+          snp_type = "miss",
+          snp =
+          if(!is.na(row[4])){
+            str_split(row[4], ",") %>%
+              unlist() %>%
+              lapply(
+                function(m){
+                  str_split(m, "-") %>%
+                    unlist() %>%
+                    as.integer() %>%
+                    {seq(min(.), max(.), by = 1)}
+                }
+              ) %>%
+              unlist() %>%
+              paste(., "N", sep ="")
+          } else {
+            NA
+          }
+        )
+      )
+    }
+  ) %>%
+  bind_rows(
+  ) %>%
+  mutate(
+    position =  parse_number(snp),
+    snp_var = sub(".*[0-9]", "", snp)
+  ) %>%
+  filter(
+    !is.na(snp)
+  )
+
+
+# Filter to most abundant SNP positions
+snv_filter <-
+  snv %>%
+  left_join(
+    n %>% select(batch, barcode_id, n_quality),
+    by = c("batch", "barcode_id")
+  ) %>%
+  filter(
+    n_quality %in% c("MQ", "HQ")
+  ) %>%
+  group_by(
+    position
+  ) %>%
+  summarise(
+    n = n(),
+    snps = paste(snp_var %>% unique(), collapse = ";")
+  ) %>%
+  filter(n > 2) %>%
+  group_by(
+    snps
+  ) %>%
+  mutate(
+    snp_grp = position  - 1:n()
+  ) %>%
+  group_by(snps, snp_grp) %>%
+  slice_head(n = 5)
+```
+
+```{r eval=FALSE, include=FALSE}
+# Plot tree for every batch
+thl <- list()
+for (i in 1:length(tree)){
+  # Batch name
+  bn <- names(tree)[i]
+  
+  # Batch tree
+  bt <- tree[[i]]
+  
+  # Prepare batch heatmap
+  bth <- 
+    filter(
+      snv,
+      position %in% snv_filter$position & batch == bn & barcode_id %in% bt$tip.label
+    ) %>%
+    select(barcode_id, position, snp_var) %>%
+    mutate(snp_var = ifelse(is.na(snp_var), "ref", snp_var)) %>%
+    pivot_wider(names_from = "position", values_from = "snp_var", values_fill = "ref")
+    
+  
+  bthf <- bth %>%
+    select(colnames(bth)[-1] %>% as.numeric() %>% sort() %>% as.character()) %>%
+    as.data.frame()
+  
+  rownames(bthf) <- bth$barcode_id
+  
+  # Prepare tree
+  tm <- filter(yf, batch == bn & barcode_id %in% bt$tip.label) %>%
+    select(-batch)
+  
+  
+  p <- ggtree(bt) %<+% tm %>%
+    {.} +
+    geom_treescale() +
+    geom_tiplab(
+      align = T,
+      linesize = .25,
+      size = 3,
+      aes(color = n_quality),
+      offset = 0.00016,
+      fontface = "bold", hjust = 1
+    ) +
+    scale_color_manual(
+      breaks = c("HQ", "MQ"),
+      values = c("#00A087FF", "#4DBBD5FF"),
+      name = "Genome Quality"
+    ) +
+    guides(
+      colour = guide_legend(override.aes = list(size = 4))
+    ) +
+    geom_tippoint(
+      aes(color = n_quality),
+      size = 2
+    ) +
+    theme(
+      legend.position = "bottom")
+  
+  figh <- length(bt$tip.label)*0.2
+  
+  if (nrow(snv_filter) > 0){
+    
+  tp1 <- gheatmap(
+      p,
+      bthf,
+      colnames_angle = 90,
+      hjust = 1,
+      font.size = 2,
+      offset = 0.0002,
+      width = 5) +
+      scale_fill_manual(
+        values = c("#33a02c", "#1f78b4", "grey30", "#de2d26", "grey80", "orange", "white"),  
+        name = "Variant", breaks = c("A", "C", "G", "T", "N", "del", "ref")
+      ) +
+      theme(
+        legend.position = "bottom"
+      )
+  
+  ggsave(paste(bn, "_tree.png"), tp1, width = 20, height = figh*0.2 + 10)
+  }
+}
+```
+
+
+```{r}
+# Export metadata for MQ/HQ genomes
+me <- yf %>%
+  filter(filter %in% c("HQ", "MQ")) %>%
+  select(
+    batch,
+    barcode_id,
+    sample_name,
+    pango_lineage,
+    scorpio_lineage
+  )
+
+write_tsv(me, "metadata_export.tsv")
+
+sf[paste(me$batch, ".", me$barcode_id, sep = "")] %>%
+  writeXStringSet("consensus_export.fa")
+```
+
