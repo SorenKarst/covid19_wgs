@@ -38,7 +38,7 @@ mamba create \
 # Install pangolin environment
 mamba create \
  -n covid19_wgs_pangolin \
- pangolin=3.1.11 \
+ pangolin=3.1.14 \
  -c bioconda
  
 # Clone covid19_wgs and artic
