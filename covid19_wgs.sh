@@ -83,7 +83,7 @@ case $PROTOCOL in
     LEN_MAX=1500
     PRIMER_SCHEME=V1M
     ;;
-  *;*;*)
+  *[;]*[;]*)
     LEN_MIN=$(echo "$PROTOCOL" | cut -d";" -f2)
     LEN_MAX=$(echo "$PROTOCOL" | cut -d";" -f3)
     PRIMER_SCHEME=$(echo "$PROTOCOL" | cut -d";" -f1)
