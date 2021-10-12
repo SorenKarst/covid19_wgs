@@ -54,7 +54,7 @@ git clone \
 # Copy custom schemes into artic-ncov2019
 cp \
   -r \
-  $CONDA_PREFIX/covid19_wgs/schemes/V1M \
+  $CONDA_PREFIX/covid19_wgs/custom_schemes/. \
   $CONDA_PREFIX/artic-ncov2019/primer_schemes/nCoV-2019/  
 
 # Make scripts excutable

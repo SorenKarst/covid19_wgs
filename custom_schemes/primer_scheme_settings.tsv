@@ -1,0 +1,7 @@
+scheme_id	length_min	length_max	artic_option	protocol_id	comment
+V1	400	700	minion --medaka --medaka-model r941_min_high_g360		ARTIC, ONT, full amplicon
+V2	400	700	minion --medaka --medaka-model r941_min_high_g360		ARTIC, ONT, full amplicon
+V3	400	700	minion --medaka --medaka-model r941_min_high_g360		ARTIC, ONT, full amplicon
+V4	400	700	minion --medaka --medaka-model r941_min_high_g360		ARTIC, ONT, full amplicon
+V1M	250	1500	minion --medaka --medaka-model r941_min_high_g360		Midnight, ONT, tagmentation
+V3N	50	150			ARTIC, ILM, tagmentation
