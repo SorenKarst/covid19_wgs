@@ -6,9 +6,15 @@
 #    author   Soren Karst (sorenkarst@gmail.com)
 #    license  GNU General Public License
 
-# Conda environments dir
-export CONDA_DIR=$(dirname $(readlink -f "$0") | sed 's|envs/covid19_wgs/covid19_wgs|envs|g')
-export SCHEME_LIST=$(
+# Pre-run setup
+
+### Conda
+CONDA_DIR=$(dirname $(readlink -f "$0") | sed 's|envs/covid19_wgs/covid19_wgs|envs|g')
+CONDA=$(echo $CONDA_DIR | sed 's|envs$|etc/profile.d/conda.sh|g')
+source $CONDA
+
+### Primer schemes
+SCHEME_LIST=$(
   find \
     $CONDA_DIR/covid19_wgs/artic-ncov2019/primer_schemes/nCoV-2019/ \
     -maxdepth 1 \
@@ -27,8 +33,8 @@ where:
     -h   Show this help text.
     -i   Parent folder containing barcode subfolder with fastq file(s).
     -o   Output folder and working directory.
-    -b   Space delimited string og used barcode IDs. IDs should match names of
-         barcode subfolders. Bash expansion possible (eg. barcode{25..32} barcode{34..42}).
+    -b   Space delimited string of used barcode IDs. IDs should match names of
+         barcode subfolders. Bash expansion possible (eg. \"barcode{25..32} barcode{34..42}\").
          If data from unused barcodes are registered, they will be partially
          processed and flagged in the QC.
     -p   Library protocol {artic_V3, midnight_V1M, ...}.
@@ -67,7 +73,7 @@ if [ -z ${DATA_DIR+x} ]; then echo "-i $MISSING"; echo ""; echo "$USAGE"; exit 1
 if [ -z ${ANALYSIS_DIR+x} ]; then echo "-o $MISSING"; echo ""; echo "$USAGE"; exit 1; fi;
 if [ -z ${BARCODE_SUBSET+x} ]; then echo "-b $MISSING"; echo ""; echo "$USAGE"; exit 1; fi;
 if [ -z ${PROTOCOL+x} ]; then echo "-p $MISSING"; echo ""; echo "$USAGE"; exit 1; fi;
-if [ -z ${ARTIC_ARGS+x} ]; then ARTIC_ARGS="--medaka --medaka-model r941_min_high_g360 --normalise 100"; fi;
+if [ -z ${ARTIC_ARGS+x} ]; then ARTIC_ARGS="--medaka --medaka-model r941_min_high_g360"; fi;
 if [ -z ${THREADS+x} ]; then echo "-t $MISSING"; echo ""; echo "$USAGE"; exit 1; fi;
 
 
@@ -78,12 +84,12 @@ case $PROTOCOL in
     LEN_MAX=700
     PRIMER_SCHEME=V3
     ;;
-  midnight_V1)
+  midnight_V1M)
     LEN_MIN=250
     LEN_MAX=1500
     PRIMER_SCHEME=V1M
     ;;
-  *[;]*[;]*)
+  *\;*\;*)
     LEN_MIN=$(echo "$PROTOCOL" | cut -d";" -f2)
     LEN_MAX=$(echo "$PROTOCOL" | cut -d";" -f3)
     PRIMER_SCHEME=$(echo "$PROTOCOL" | cut -d";" -f1)
@@ -94,6 +100,10 @@ case $PROTOCOL in
   exit 1
   ;;
 esac
+
+# Setup analysis folder
+PWD=$(pwd)
+mkdir $ANALYSIS_DIR
 
 # Artic version
 ARTIC_VERSION=$(artic -v)
@@ -141,11 +151,11 @@ parallel \
   "mkdir $ANALYSIS_DIR/consensus/{bid};
   cd $ANALYSIS_DIR/consensus/{bid};
   artic minion \\
-  $ARTIC_ARGS \\
+  --medaka --medaka-model r941_min_high_g360 \\
   --normalise 100 \\
   --threads 1 \\
   --scheme-directory $CONDA_DIR/covid19_wgs/artic-ncov2019/primer_schemes \\
-  --read-file {} \\
+  --read-file $PWD/{} \\
   nCoV-2019/$PRIMER_SCHEME {bid}"
 
 find \
