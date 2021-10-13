@@ -1235,11 +1235,11 @@ snv <- n %>%
 snv_filter <-
   snv %>%
   left_join(
-    n %>% select(batch, barcode_id, n_quality),
+    n %>% select(batch, barcode_id, n_count),
     by = c("batch", "barcode_id")
   ) %>%
   filter(
-    n_quality %in% c("MQ", "HQ")
+    n_count >= 7000
   ) %>%
   group_by(
     position
