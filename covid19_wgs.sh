@@ -38,8 +38,8 @@ where:
          If data from unused barcodes are registered, they will be partially
          processed and flagged in the QC.
     -p   Library protocol {artic_V3, midnight_V1M, ...}.
-         artic: intact amplicons, expect raw reads to be 400-700 bp.
-         midnight: fragmented amplicons, expect raw reads to be 250-1500 bp.
+         artic_V3: intact amplicons, expect raw reads to be 400-700 bp.
+         midnight_V1M: fragmented amplicons, expect raw reads to be 250-1500 bp.
          ...: Custom library protocol in the format \"primer_scheme;length_min;length_max\"
          eg. \"V4;250;400\"
     -a   Optional arguments to consensus pipeline.
@@ -178,7 +178,7 @@ parallel \
   --rpl '{sid} s:.*/::;s:.sorted.*::' \
   "
   align_trim \\
-    --normalise 1000000 \\
+    --normalise 100000 \\
     $CONDA_DIR/covid19_wgs/artic-ncov2019/primer_schemes/nCoV-2019/$PRIMER_SCHEME/nCoV-2019.scheme.bed \\
     --remove-incorrect-pairs \\
     --report $ANALYSIS_DIR/consensus/{sid}/{sid}.alignreport_nonormalize.txt \\
@@ -291,7 +291,7 @@ gawk \
       getline
       SEQN=$0
       gsub("[ATCG-]", "", SEQN)
-      if(length(SEQN) < 3000){
+      if(length(SEQN) < 7000){
         print HEAD "\n" $0
       }
     }
