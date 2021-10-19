@@ -18,12 +18,20 @@ options(scipen=999)
 ```
 
 ```{r message=FALSE, warning=FALSE, include=FALSE}
+# Load data for testing purposes
+use_preprocessed_data <- !file.exists("data.RData")
+if(file.exists("data.RData")){
+  load("data.RData")
+}
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
 # Report settings
 batch_dir <- rstudioapi::selectDirectory(path = getwd())
 yield_filter_factor <- 10
 ```
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
 # Import metadata
 m <- read_tsv(
   "metadata.tsv"
@@ -36,13 +44,14 @@ m <- read_tsv(
       mutate(., treatment = batch)
     } else {.}
   }
+# Batch and treatment are used interchangeably throughout the code. The treatment var was added to allow for an alternative grouping var for some plots.
 
 batch_list <- 
   m$batch %>%
   unique()
 ```
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
 # Import coverage data
 
 # Column names
@@ -73,7 +82,10 @@ pc <-
   pcl %>%
   lapply(
     .,
-    function(file){read_tsv(file, col_names = pcc)}
+    function(file){read_tsv(file, col_names = pcc)} %>%
+      mutate(
+        amplicon_id = gsub("SARS-CoV-2_INSERT_", "", amplicon_id) %>% as.integer()
+      )
   ) %>%
   bind_rows(
     .id = "batch"
@@ -125,7 +137,7 @@ acn <-
   )
 ```
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
 # Import nextclade classification
 nl <- list.files(
   path = paste(batch_dir, "/", batch_list, sep = ""),
@@ -192,6 +204,39 @@ n <-
       by = c("batch", "barcode_id")
     )
   } %>%
+  {
+    ntbl <- .
+    left_join(
+      ntbl,
+      ntbl$missing %>%
+        str_split(",") %>%
+        set_names(paste(ntbl$batch, ntbl$barcode_id, sep = ";")) %>%
+        lapply(
+          function(m){
+            tibble(miss_range = m)
+          }
+        ) %>%
+        bind_rows(.id = "id") %>%
+        mutate(
+          start = str_split(miss_range, "-") %>%
+            lapply(., function(x){as.integer(x) %>% min()}) %>% unlist(),
+          end = str_split(miss_range, "-") %>%
+            lapply(., function(x){as.integer(x) %>% max()}) %>% unlist(),
+        ) %>%
+        group_by(id) %>%
+        filter(end - start + 1 >= 3) %>%
+        summarise(
+          missing_position = paste(miss_range, collapse = ",")
+        ) %>%
+        ungroup() %>%
+        separate(
+          id,
+          c("batch", "barcode_id"),
+          ";"
+        ),
+      by = c("batch", "barcode_id")
+    )
+  } %>%
   left_join(
     m,
     .,
@@ -216,7 +261,7 @@ n <-
   )
 ```
 
-```{r}
+```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
 # Pangolin lineage
 pl <- list.files(
   path = paste(batch_dir, "/", batch_list, sep = ""),
@@ -248,7 +293,7 @@ p <-
   )
 ```
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
 # Yield over time
 ytl <- list.files(
   path = paste(batch_dir, "/", batch_list, sep = ""),
@@ -279,7 +324,7 @@ yt <-
   )
 ```
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
 # Length distribution
 ll <- list.files(
   path = paste(batch_dir, "/", batch_list, sep = ""),
@@ -307,7 +352,7 @@ l <-
   )
 ```
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
 # Import trees
 tl <- list.files(
   path = paste(batch_dir, "/", batch_list, sep = ""),
@@ -329,7 +374,7 @@ tree <-
   )
 ```
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
 #Import consensus sequences
 sl <- list.files(
   path = paste(batch_dir, "/", batch_list, sep = ""),
@@ -354,12 +399,72 @@ s <-
   unlist()
 ```
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
-# Store data
-# save.image(file = "data.RData")
+```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
+#Import consensus sequences
+spec_l <- list.files(
+  path = paste(batch_dir, "/", batch_list, sep = ""),
+  pattern = "^specifications.tsv",
+  recursive = T,
+  full.names = T
+  ) %>%
+  set_names(., sub("/specifications.tsv", "", .) %>% gsub(".*/", "", .))
+
+spec <- 
+  spec_l %>%
+  lapply(
+    .,
+    function(file){read_tsv(file)}
+  ) %>%
+  bind_rows(
+    .id = "batch"
+  )
+
+spec_v <-
+  spec %>%
+  filter(
+    process %in% c("bioinformatics_protocol", "pangolin","pangolearn","nextclade")
+  ) %>%
+  select(process, version_available) %>%
+  mutate(version_nr = parse_number(version_available %>% gsub("-", "", .))) %>%
+  group_by(process) %>%
+  slice_max(
+    order_by = version_nr, n = 1, with_ties = F
+  ) %>%
+  select(-version_nr)
+ 
+spec_s <-
+  spec %>%
+  filter(
+    process %in% c("bioinformatics_protocol", "pangolin","pangolearn","nextclade")
+  ) %>%
+  select(-version_available) %>%
+  spread(
+    key = "batch",
+    value = "version_used"
+  )
 ```
 
-## Processing summary
+```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
+# Store data for testing purposes
+# save.image(file = "data.RData")
+```
+## Run specifications summary
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+spec_s %>%
+  left_join(
+    spec_v,
+    by = "process"
+  ) %>%
+  kbl() %>%
+  kable_minimal(c("hover"))
+```
+
+
+
+## Run summary
+
+---
 
 ```{r message=FALSE, warning=FALSE, include=FALSE}
 # Yield time statistics
@@ -391,7 +496,7 @@ ytc <-
   )
 ```
 
-```{r seq_summary_tab, fig.cap="\\label{fig:seq_summary_tab} Sequencing summary"}
+```{r fig.cap="\\label{fig:seq_summary_tab} Sequencing summary", message=FALSE, warning=FALSE, echo=FALSE}
 # Compile sequencing summary table
 seqsum_t1 <-
   ytc %>%
@@ -455,14 +560,18 @@ seqsum_t1 <-
       )
   } %>%
   kableExtra::footnote(
-    general = "\\tiny{´Insufficient yield warning (red Yield pr. sample) is active if mean read coverage <60 Mbp/sample (< 2000x). Insufficient yield can be due to short sequencing duration or poor sequencing run.}", escape = FALSE 
+    general = "Yield pr. sample should be > 60 Mbp/sample (> 2000x).", escape = FALSE 
   )
 
 seqsum_t1
 ```
 
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
 
-```{r yield_plot, fig.cap="\\label{fig:seq_summary_plot} Cumulative Demultiplexed sequencing yield over duration of run"}
+```{r yield_plot, fig.cap="\\label{fig:seq_summary_plot} Cumulative Demultiplexed sequencing yield over duration of run", message=FALSE, warning=FALSE, echo=FALSE}
 # Yield over time plot
 seqsum_p1 <- 
   ggplot(
@@ -515,7 +624,7 @@ seqsum_p2 <-
   
 ```
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+```{r message=FALSE, warning=FALSE, echo=FALSE, out.width = "100%"}
 # Combine plots
 plot_grid(
   seqsum_p1,
@@ -526,28 +635,18 @@ plot_grid(
   )
 ```
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
-# Barcode sample list
-seqsum_t2 <-
-  ytc %>%
-  group_by(batch, barcode_id, barcode_classification) %>%
-  summarise(
-    total_yield_bp = (sum(yield_bp)/1000000) %>% round(1),
-    total_reads_n = (sum(reads_n)) %>% round(1),
-  ) %>%
-  ungroup() %>%
-  set_names(c("Batch", "Barcode ID", "Barcode classification", "Yield (Mbp)", "Total reads (n)")) %>%
-  left_join(
-    m,
-    by = c("Batch" = "batch", "Barcode ID" = "barcode_id")
-  )
-  
-datatable(seqsum_t2)
-```
+**Data categories**
 
-### Quality statistics
+* Used:   Data assigned to barcode IDs in the metadata sheet.
+* Unused: Data assigned to barcodes IDs not in the metadata sheet.
+* None:   Data not assigned to a barcode.
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+
+## QC summary
+
+---
+
+```{r message=FALSE, warning=FALSE, include=FALSE, echo=FALSE}
 # Calculate yield (BP) and define filter settings
 y <-
   pcn %>%
@@ -697,7 +796,7 @@ qp1 <- ggplot(
   )
 ```
 
-```{r qc_summary_plot, fig.cap="\\label{fig:qc_overview_plot} QC summary"}
+```{r qc_summary_plot, message=FALSE, warning=FALSE, echo=FALSE, out.width = "100%"}
 cpqp1 <- plot_grid(
   cp1,
   qp1,
@@ -712,19 +811,61 @@ cpqp1
 
 **Filters**
 
-* HQ:             < 200xN
-* MQ:             < 3000xN
-* n_filter:       >= 3000xN
-* yield_filter:   <`r yield_filter_factor`x max(NC yield)
-* missing_filter: No aligned genome (missing or poor quality)
-* mix_filter:     > 3 ambiguous bases
-* NC_pass:        < 75% genome coverage
-* NC_fail:        > 75% genome coverage
+|   |   |
+|---|---|
+|HQ|< 200 N|
+|MQ|< 3000 N|
+|n_filter|>= 3000 N|
+|yield_filter|sample yield < `r yield_filter_factor`x negative control (max)|
+|missing_filter|No aligned genome (missing or poor quality)|
+|mix_filter|> 3 ambiguous bases|
+|NC_pass|< 75% genome coverage|
+|NC_fail|> 75% genome coverage|
+|   |   |
 
+## Sample summary
 
-### Control coverage QC
+---
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Barcode sample list
+seqsum_t2 <-
+  ytc %>%
+  group_by(batch, barcode_id, barcode_classification) %>%
+  summarise(
+    total_yield_bp = (sum(yield_bp)/1000000) %>% round(1),
+    total_reads_n = (sum(reads_n)) %>% round(1),
+  ) %>%
+  ungroup() %>%
+  set_names(c("Batch", "Barcode ID", "Barcode classification", "Yield (Mbp)", "Total reads (n)")) %>%
+  left_join(
+    m %>% select(-sample_category, -treatment),
+    by = c("Batch" = "batch", "Barcode ID" = "barcode_id")
+  )
+  
+datatable(seqsum_t2)
+```
+
+**Column explanation**
+
+* Batch: Sequencing run batch.
+* Barcode ID: Barcode number from barcode01 to barcode96 as is standard output from MinKNOW.
+* Barcode classification: Barcode has been registered as `used` for a sample in the metadata og not `unused`. Data in unused barcodes should not occur.
+* Yield: Data yield assigned to a specific barcode.
+* Total reads: Total reads assigned to a specific barcode.
+* ...: Extra columns in the metadata sheet.
+
+The search bar can be used to filter the data. For example search "<batch_id> Unused", to show all unused barcodes with data in a specific batch.
+
+The columns can be sorted by presseing the small arrows next to the column names.
+
+## Appendix
+
+---
+
+### Negative control summary
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
 # Overall statistics
 cs <-
   yf %>%
@@ -760,10 +901,9 @@ if(nrow(cs) != 0){
       background = cs$color
     ) %>%
     kableExtra::footnote(
-      general = "\\tiny{Negative control (NC) can either pass (NC_pass) or fail (NC_fail) in the filter. A NC fails if > 75% of the genome generates consensus.}", escape = FALSE 
+      general = "Negative control (NC) can either pass (NC_pass) or fail (NC_fail) in the filter. A NC fails if > 75% of the genome generates consensus, which requires > 20x coverage.", escape = FALSE 
     ) 
 }
-
 ```
 
 
@@ -827,7 +967,9 @@ ap <- ggplot(
 
 ```
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+### Negative control coverage
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
 # Control coverage plot
 control_n <-
   filter(yf, sample_category == "control") %>%
@@ -914,26 +1056,40 @@ pcc <- ggplot(
   )
 
 pcc
-
-ggsave("control_coverage.png", pcc,height = control_n*2 + 2, width = 10)  
 }
 ```
 
-### Sample coverage QC
+**Types of negative control contamination**
 
-**Batch overview**
+|   |   |
+|---|---|
+| < 75% coverage, < 20x coverage | Barcode demultiplexing bleed over or low template contamination probably in barcoding step (QC pass). |
+| < 50% coverage, > 20x coverage | Low template contamination in pre PCR either from nucleotide extraction or PCR setup (QC pass). |
+| < 75% coverage, > 20x coverage | Medium template contamination pre PCR either from nucleotide extraction or PCR setup (QC pass and caution). |
+| > 75%, coverage, < 20x coverage | Low post PCR product contamination or barcode contamination typically from concentrated samples in the batch (QC pass and caution). |
+| > 75%, coverage, > 20x coverage | High template or PCR product contamination from either nucleotide extraction, PCR setup, post PCR, barcode contamination (QC fail). |
+| Some negative controls contaminated | Random contamination. |
+| All negative controls contaminated | Reagent contamination or poor handling. |
+|   |   |
+
+### Sample absolute coverage overview
 
 ```{r message=FALSE, warning=FALSE, include=FALSE}
 treatment_n <-
   distinct(yf, treatment) %>%
   nrow()
+```
 
+```{r message=FALSE, warning=FALSE, echo=FALSE, fig.height=3*treatment_n + 2}
 acny <-
   acn %>%
   left_join(
     yf,
     .,
     by = c("batch", "barcode_id")
+  ) %>%
+  filter(
+    n_quality != "n_filter" | sample_category == "control"
   )
 
 scp1 <- ggplot(
@@ -992,11 +1148,19 @@ scp1ap <- plot_grid(
   )
 
 scp1ap
-
-ggsave("sample_coverage_overview.png", scp1ap, height = treatment_n*2 + 1, width = 10)
 ```
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+**Coverage patterns**
+
+NB: Plot is only showing genomes with < 3000 Ns and the negative controls.
+
+* 1-2 amplicon dropouts. Indicates mutations in priming sites or reagent issues. Typically the amplicon coverage is dividede in two distributions.
+* >2 amplicon dropouts. Usually indicates sub-optimal PCR reaction conditions. Possible causes: error in reagent mixing/dispensing, lid problems or machine temperature control problems.
+* Amplicon pool coverage skew. One of the PCR reactions failed or worked sub-optimally.
+
+### Sample normalized coverage overview
+
+```{r message=FALSE, warning=FALSE, echo=FALSE, fig.height=3*treatment_n + 2}
 pcny <-
   pcn %>%
   left_join(
@@ -1065,12 +1229,7 @@ scp2ap <- plot_grid(
   )
 
 scp2ap
-
-ggsave("sample_coverage_norm_overview.png", scp2ap, height = treatment_n*2 + 1, width = 10)
 ```
-
-
-**Subsample view**
 
 ```{r message=FALSE, warning=FALSE, include=FALSE}
 pcny_sample <-
@@ -1139,23 +1298,22 @@ scp3ap <- plot_grid(
   )
 
 scp3ap
-
-ggsave("sample_coverage_norm_sub.png", scp3ap, height = treatment_n*2 + 1, width = 10)
 ```
 
 
-### Sample ambiguous bases QC
+### Overview of SNPs and ambiguous bases
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+```{r message=FALSE, warning=FALSE, echo=FALSE}
 # Determine SNP frequencies from HQ/MQ genomes
 snv <- n %>%
   select(
     substitutions,
     deletions,
     insertions,
-    missing,
+    missing_position,
     batch,
-    barcode_id
+    barcode_id,
+    mixed_position
   ) %>%
   apply(
     1,
@@ -1198,6 +1356,28 @@ snv <- n %>%
         tibble(
           batch = row[5],
           barcode_id = row[6],
+          snp_type = "mix",
+          snp =
+          if(!is.na(row[7])){
+            str_split(row[7], ",") %>%
+              unlist() %>%
+              lapply(
+                function(m){
+                  str_split(m, "-") %>%
+                    unlist() %>%
+                    as.integer() %>%
+                    {seq(min(.), max(.), by = 1)}
+                }
+              ) %>%
+              unlist() %>%
+              paste(., "mix", sep ="")
+          } else {
+            NA
+          }
+        ),
+        tibble(
+          batch = row[5],
+          barcode_id = row[6],
           snp_type = "miss",
           snp =
           if(!is.na(row[4])){
@@ -1224,11 +1404,17 @@ snv <- n %>%
   ) %>%
   mutate(
     position =  parse_number(snp),
-    snp_var = sub(".*[0-9]", "", snp)
+    snp_var = 
+      case_when(
+        snp_type == "ins" ~ "ins",
+        T ~ sub(".*[0-9]", "", snp)
+      )
   ) %>%
+  group_by(position) %>%
   filter(
     !is.na(snp)
   )
+  
 
 
 # Filter to most abundant SNP positions
@@ -1239,7 +1425,8 @@ snv_filter <-
     by = c("batch", "barcode_id")
   ) %>%
   filter(
-    n_count >= 7000
+    n_count <= 7000,
+    snp_type != "miss"
   ) %>%
   group_by(
     position
@@ -1248,20 +1435,14 @@ snv_filter <-
     n = n(),
     snps = paste(snp_var %>% unique(), collapse = ";")
   ) %>%
-  filter(n > 2) %>%
-  group_by(
-    snps
-  ) %>%
-  mutate(
-    snp_grp = position  - 1:n()
-  ) %>%
-  group_by(snps, snp_grp) %>%
-  slice_head(n = 5)
+  filter(n > 2)
 ```
 
-```{r eval=FALSE, include=FALSE}
+```{r message=FALSE, warning=FALSE, include=FALSE}
 # Plot tree for every batch
-thl <- list()
+thl <- vector("list", length=length(tree) + 1)
+figh <- vector("numeric", length=length(tree) + 1)
+figh_tot <- 0
 for (i in 1:length(tree)){
   # Batch name
   bn <- names(tree)[i]
@@ -1271,14 +1452,13 @@ for (i in 1:length(tree)){
   
   # Prepare batch heatmap
   bth <- 
+    snv %>%
     filter(
-      snv,
       position %in% snv_filter$position & batch == bn & barcode_id %in% bt$tip.label
     ) %>%
     select(barcode_id, position, snp_var) %>%
     mutate(snp_var = ifelse(is.na(snp_var), "ref", snp_var)) %>%
     pivot_wider(names_from = "position", values_from = "snp_var", values_fill = "ref")
-    
   
   bthf <- bth %>%
     select(colnames(bth)[-1] %>% as.numeric() %>% sort() %>% as.character()) %>%
@@ -1291,16 +1471,18 @@ for (i in 1:length(tree)){
     select(-batch)
   
   
-  p <- ggtree(bt) %<+% tm %>%
+  p <- ggtree(bt, branch.length = "none") %<+% tm %>%
     {.} +
     geom_treescale() +
     geom_tiplab(
       align = T,
       linesize = .25,
-      size = 3,
+      size = 2,
       aes(color = n_quality),
       offset = 0.00016,
-      fontface = "bold", hjust = 1
+      fontface = "bold",
+      hjust = 1, 
+      vjust = 0
     ) +
     scale_color_manual(
       breaks = c("HQ", "MQ"),
@@ -1312,36 +1494,81 @@ for (i in 1:length(tree)){
     ) +
     geom_tippoint(
       aes(color = n_quality),
-      size = 2
+      size = 1
     ) +
     theme(
       legend.position = "bottom")
   
-  figh <- length(bt$tip.label)*0.2
-  
-  if (nrow(snv_filter) > 0){
+  # Build plot
+  if (length(snv_filter) > 0){
     
-  tp1 <- gheatmap(
+    tp1 <- gheatmap(
       p,
       bthf,
+      colnames = ifelse(length(tree) == i, T, F), 
       colnames_angle = 90,
       hjust = 1,
       font.size = 2,
-      offset = 0.0002,
-      width = 5) +
+      width = 4
+    ) +
       scale_fill_manual(
-        values = c("#33a02c", "#1f78b4", "grey30", "#de2d26", "grey80", "orange", "white"),  
-        name = "Variant", breaks = c("A", "C", "G", "T", "N", "del", "ref")
+        values = c("#33a02c", "#1f78b4", "grey30", "#de2d26", "grey80", "orange", "purple", "greenyellow", "white"),  
+        name = "Variant",
+        breaks = c("A", "C", "G", "T", "N", "del", "ins", "mix", "ref")
       ) +
       theme(
         legend.position = "bottom"
+      ) +
+      {if(length(tree) == i)ggtree::vexpand(.1, -1)}
+    
+    thl[[i]] <-
+      tp1 +
+      theme(
+        legend.position='none'
       )
-  
-  ggsave(paste(bn, "_tree.png"), tp1, width = 20, height = figh*0.2 + 10)
+    
+    figh[[i]] <- ifelse(
+      length(tree) == i,
+      length(bt$tip.label)*0.2 + 1,
+      length(bt$tip.label)*0.2
+      )
+    figh_tot <- figh_tot + figh[[i]]
   }
 }
+
+figh_tot <- figh_tot
+figh[[i + 1]] <- 2 
+thl[[i + 1]] <- get_legend(tp1)
+
+
+cpqp1 <- plot_grid(
+  plotlist = thl, 
+  ncol = 1,
+  align = 'v',
+  axis = 'lr',
+  rel_heights = figh,
+  labels = names(tree),
+  label_size = 7,
+  label_x = 0,
+  label_y = 1
+)
 ```
 
+```{r message=FALSE, warning=FALSE, echo=FALSE, fig.height=figh_tot, out.width = "100%"}
+cpqp1
+```
+
+**Types of patterns**
+
+|   |   |
+|---|---|
+| >3 SNPS spread out across genome | Indicates contamination. SNP sites often correlates with SNPs in other genomes in the batch. |
+| <=3 SNPS present in multiple genomes | Indicates technical error in consensus pipeline. Can sometimes be fixed by tweaking the bedfile. |
+| Large sections of missing bases (N) | Amplicon drop-out. For more complete picture of amplicon dropout inspect the coverage overviews. |
+| Consistent medium quality within specific clades of the tree | Indicates variant specific bias. Usually amplicon drop-out due to mutation in priming site. |
+
+
+## Export HQ and MQ genomes
 
 ```{r}
 # Export metadata for MQ/HQ genomes
@@ -1357,7 +1584,7 @@ me <- yf %>%
 
 write_tsv(me, "metadata_export.tsv")
 
-sf[paste(me$batch, ".", me$barcode_id, sep = "")] %>%
+s[paste(me$batch, ".", me$barcode_id, sep = "")] %>%
   writeXStringSet("consensus_export.fa")
 ```
 
