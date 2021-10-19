@@ -36,10 +36,13 @@ mamba create \
  -c bioconda
   
 # Install pangolin environment
-mamba create \
- -n covid19_wgs_pangolin \
- pangolin=3.1.14 \
- -c bioconda
+git clone \
+  https://github.com/cov-lineages/pangolin.git\
+  --branch v3.1.14
+cd pangolin
+mamba env create -f environment.yml -n covid19_wgs_pangolin
+conda activate covid19_wgs_pangolin
+pip install .
  
 # Clone covid19_wgs and artic
 conda activate covid19_wgs
@@ -55,7 +58,15 @@ git clone \
 cp \
   -r \
   $CONDA_PREFIX/covid19_wgs/custom_schemes/. \
-  $CONDA_PREFIX/artic-ncov2019/primer_schemes/nCoV-2019/  
+  $CONDA_PREFIX/artic-ncov2019/primer_schemes/nCoV-2019/ 
+  
+# Fix naming error in artic V4 scheme
+for FILE in $CONDA_PREFIX/artic-ncov2019/primer_schemes/nCoV-2019/V4/SARS-CoV-2*
+do
+  FILE_FORMAT=$(echo "$FILE" | sed 's|SARS-CoV-2|nCoV-2019|')
+  mv "$FILE" "$FILE_FORMAT"
+done
+
 
 # Make scripts excutable
 mkdir -p $CONDA_PREFIX/bin
