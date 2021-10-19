@@ -228,11 +228,12 @@ gawk \
     DATE=substr($5, 12, 10)
     TIME=substr($5, 23, 5)
     BARCODE=substr($9, 9)
+    FLOWCELL=substr($6, 14)
     getline
     LEN=length($0)
     # Create array
-    interval[BARCODE"\t"DATE" "TIME]["reads"]++
-    interval[BARCODE"\t"DATE" "TIME]["bases"]+=LEN
+    interval[BARCODE"\t"DATE" "TIME"\t"FLOWCELL]["reads"]++
+    interval[BARCODE"\t"DATE" "TIME"\t"FLOWCELL]["bases"]+=LEN
     len[BARCODE"\t"LEN]++
   }
   END{
@@ -317,10 +318,18 @@ get_latest_release() {
     sed -E 's/.*"([^"]+)".*/\1/'                                    # Pluck JSON value
 }
 
+# Print specifications
+
+if [ "$PROTOCOL" = "$PRIMER_SCHEME;$LEN_MIN;$LEN_MAX" ]; then
+  PRINT_PROTOCOL="$PROTOCOL"
+else
+  PRINT_PROTOCOL="$PROTOCOL ($PRIMER_SCHEME;$LEN_MIN;$LEN_MAX)"
+fi
 printf "process\tversion_used\tversion_available
-lab_protocol\t$PROTOCOL($PRIMER_SCHEME;$LEN_MIN;$LEN_MAX)\tNA
+sequencing_run_id\t\tNA
+bioinformatics_protocol\t$PRINT_PROTOCOL\tNA
 consensus_pipeline\t$ARTIC_VERSION\tartic $(get_latest_release "artic-network/fieldbioinformatics")
-consensus_arguments\t$ARTIC_ARGS\tNA)
+consensus_arguments\t$ARTIC_ARGS\tNA
 pangolin\t$PANGOLIN_VERSION\tpangolin $(get_latest_release "cov-lineages/pangolin")
 pangolearn\t$PANGOLEARN_VERSION\tpangoLEARN $(get_latest_release "cov-lineages/pangoLEARN")
 nextstrain-cli\t$NXST_VERSION\tNA
