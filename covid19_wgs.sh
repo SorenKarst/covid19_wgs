@@ -237,7 +237,7 @@ gawk \
     len[BARCODE"\t"LEN]++
   }
   END{
-    print "barcode_id\tdate_time\treads_n\tyield_bp" > OUT"/yield.tsv"
+    print "barcode_id\tdate_time\tflowcell_id\treads_n\tyield_bp" > OUT"/yield.tsv"
     for (i in interval){
       print i "\t" interval[i]["reads"] "\t" interval[i]["bases"] > OUT"/yield.tsv"
     }
@@ -326,7 +326,6 @@ else
   PRINT_PROTOCOL="$PROTOCOL ($PRIMER_SCHEME;$LEN_MIN;$LEN_MAX)"
 fi
 printf "process\tversion_used\tversion_available
-sequencing_run_id\t\tNA
 bioinformatics_protocol\t$PRINT_PROTOCOL\tNA
 consensus_pipeline\t$ARTIC_VERSION\tartic $(get_latest_release "artic-network/fieldbioinformatics")
 consensus_arguments\t$ARTIC_ARGS\tNA
