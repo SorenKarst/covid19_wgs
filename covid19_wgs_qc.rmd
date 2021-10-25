@@ -28,7 +28,9 @@ if(file.exists("data.RData")){
 ```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
 # Report settings
 batch_dir <- rstudioapi::selectDirectory(path = getwd())
-yield_filter_factor <- 10
+yield_filter_factor <- 5
+hq_n <- 200
+mq_n <- 6000
 ```
 
 ```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
@@ -38,13 +40,7 @@ m <- read_tsv(
 ) %>%
   mutate(
     sample_category = ifelse(grepl("nc_|pc_", str_to_lower(sample_name)), "control", "sample"),
-  )  %>%
-  {
-    if(!("treatment" %in% names(.))){
-      mutate(., treatment = batch)
-    } else {.}
-  }
-# Batch and treatment are used interchangeably throughout the code. The treatment var was added to allow for an alternative grouping var for some plots.
+  ) 
 
 batch_list <- 
   m$batch %>%
@@ -248,8 +244,8 @@ n <-
         grepl("nc", str_to_lower(sample_name)) & n_count/ref_length < 0.25 ~ "NC_fail",
         grepl("nc", str_to_lower(sample_name)) & (n_count/ref_length >= 0.25 | is.na(n_count))~ "NC_pass",
         is.na(n_count) ~ "missing_filter",
-        n_count <= 200 ~ "HQ",
-        n_count <= 3000 ~ "MQ",
+        n_count <= hq_n ~ "HQ",
+        n_count <= mq_n ~ "MQ",
         T ~ "n_filter"
       ),
     mixed_quality = 
@@ -430,7 +426,16 @@ spec_v <-
   slice_max(
     order_by = version_nr, n = 1, with_ties = F
   ) %>%
-  select(-version_nr)
+  select(-version_nr) %>%
+  spread(
+    key = "process",
+    value = "version_available"
+  ) %>%
+  mutate(
+    batch = "version_available",
+    flowcell_id = "",
+    start_date = ""
+  )
  
 spec_s <-
   spec %>%
@@ -439,7 +444,7 @@ spec_s <-
   ) %>%
   select(-version_available) %>%
   spread(
-    key = "batch",
+    key = "process",
     value = "version_used"
   )
 ```
@@ -448,23 +453,70 @@ spec_s <-
 # Store data for testing purposes
 # save.image(file = "data.RData")
 ```
+
 ## Run specifications summary
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+---
+
+Summary of sequencing batches processed for QC and versions of key software packages used for processing. Ensure correct sequencing runs have been included in the analysis and ensure software versions are not out of date.
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+yts <-
+  yt %>%
+  group_by(batch, flowcell_id) %>%
+  summarise(
+    start_date = min(date_time) %>% gsub(" .*", "", .)
+  ) %>%
+  group_by(batch) %>%
+  summarise(
+    flowcell_id = paste(unique(flowcell_id), collapse = ";"),
+    start_date = paste(start_date, collapse = ";")
+  ) %>%
+  gather(
+    key = "process",
+    value = "value",
+    2:3
+  ) %>%
+  spread(
+    key = "process",
+    value = "value"
+  )
+
 spec_s %>%
   left_join(
-    spec_v,
-    by = "process"
+    yts,
+    .,
+    by = "batch"
   ) %>%
+  bind_rows(spec_v) %>%
   kbl() %>%
   kable_minimal(c("hover"))
 ```
 
 
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
 
-## Run summary
+
+## Sequencing summary
 
 ---
+
+Summary sequencing yield, yield over time, number of reads and read distribution. Expected sequencing yield from a MinION flowcell is 5-15 Gbp if run for 72 hrs (4320 min). Read length distribution depends on protocol type, but will either be a continuous distribution (fragmentation library preparation) or a single peak (ligation library preparation) between 200 and 1200 bp. Large fraction of unused data indicates incomplete sample assignment in the metadata sheet or barcode contamination.
+
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
 
 ```{r message=FALSE, warning=FALSE, include=FALSE}
 # Yield time statistics
@@ -641,10 +693,21 @@ plot_grid(
 * Unused: Data assigned to barcodes IDs not in the metadata sheet.
 * None:   Data not assigned to a barcode.
 
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
 
 ## QC summary
 
 ---
+
+Summary of the QC status of each sample. Samples are classified according to the quality of the consensus genome generated from the sample data and the performance of the negative controls (NC). Important: Negative controls should be flagged in the metadata column sample_name with the post-fix `nc_*` eg. `nc_ext1` or `nc_pcr2`. Passing samples and genomes are assigned as `HQ` or `MQ`, where failing samples are assigned with the filter causing the sample to fail. The filter definitions can be seen below.
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
 
 ```{r message=FALSE, warning=FALSE, include=FALSE, echo=FALSE}
 # Calculate yield (BP) and define filter settings
@@ -666,7 +729,34 @@ y <-
   mutate(
     rep = 1:n(),
     yield_bp = ifelse(is.na(yield_bp), as.numeric(0), yield_bp)
-  ) 
+  )
+
+ytcf <- 
+  ytc %>%
+  group_by(batch, barcode_id, barcode_classification) %>%
+  summarise(
+    total_yield_bp = (sum(yield_bp)) %>% round(1),
+    total_reads_n = (sum(reads_n)) %>% round(1),
+  ) %>%
+  filter(
+    barcode_classification == "Unused"
+  ) %>%
+    group_by(
+    batch
+  ) %>%
+  slice_max(
+    total_yield_bp,
+    n = 1
+    ) %>%
+  mutate(
+    yield_cutoff_unused = total_yield_bp * yield_filter_factor
+  ) %>%
+  {if(nrow(.) == 0){
+    tibble(
+      batch = unique(ytc$batch),
+      yield_cutoff_unused = 0
+    )
+  } else .}
 
 yc <- 
   y %>%
@@ -676,7 +766,7 @@ yc <-
     !is.na(n_count)
   ) %>%
   group_by(
-    batch, treatment
+    batch
   ) %>%
   slice_max(
     yield_bp,
@@ -688,16 +778,30 @@ yc <-
   {if(nrow(.) == 0){
     tibble(
       batch = unique(y$batch),
-      treatment = unique(y$treatment),
       yield_cutoff = 0
     )
   } else .}
 
+
+ycm <- 
+  bind_rows(
+    yc %>% select(batch, barcode_id, sample_name, yield_bp, yield_cutoff),
+    ytcf %>% select(batch, barcode_id, yield_bp = total_yield_bp, yield_cutoff = yield_cutoff_unused)
+  ) %>%
+  group_by(batch) %>%
+  slice_max(
+    order_by = yield_cutoff,
+    n = 1,
+    with_ties = F
+  )
+
+
+
 yf <- 
   y %>%
   left_join(
-    yc[c("treatment", "yield_cutoff")],
-    by = "treatment"
+    ycm %>% select(batch, yield_cutoff),
+    by = "batch"
   ) %>%
   mutate(
     filter = 
@@ -715,8 +819,8 @@ yfl <- c("HQ", "MQ", "n_filter", "missing_filter", "mix_filter", "yield_filter",
 yfc <- c("#00A087FF", "#4DBBD5FF", "#F39B7FFF", "gray85", "gray75", "gray55", "deeppink", "mediumpurple1")
 yfo <- 
   tibble(
-    levels = yf$treatment,
-    order = parse_number(yf$treatment)
+    levels = yf$batch,
+    order = parse_number(yf$batch)
   ) %>%
   arrange(order) %>%
   .$levels %>%
@@ -734,7 +838,7 @@ cp1 <- ggplot(
 ) +
   geom_jitter(width = 0.05) +
   geom_point(
-    data = yc,
+    data = ycm,
     aes(
       x = "Samples",
       y = yield_cutoff/1000000
@@ -745,7 +849,7 @@ cp1 <- ggplot(
   ) +
   facet_grid(
     factor(
-      treatment,
+      batch,
       levels = yfo)~.
       ) +
   scale_y_log10() +
@@ -781,7 +885,7 @@ qp1 <- ggplot(
     ) +
   facet_grid(
     factor(
-      treatment,
+      batch,
       levels = yfo)~.
       ) +
   scale_fill_manual(
@@ -796,14 +900,51 @@ qp1 <- ggplot(
   )
 ```
 
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+yf %>%
+  filter(sample_category != "control") %>%
+  mutate(
+    success = 
+      case_when(
+        filter == "HQ" ~ "HQ",
+        filter == "MQ" ~ "MQ",
+        T ~ "Fail"
+      )
+  ) %>%
+  group_by(batch, success) %>%
+  summarise(
+    n = n()
+  ) %>%
+  ungroup() %>%
+  mutate(
+    success = factor(success, levels = c("HQ", "MQ", "Fail"))
+  ) %>%
+  spread(
+    key = "success",
+    value = "n",
+    drop = F,
+    fill = 0
+  ) %>%
+  mutate(
+    `Genome success (%)` = round(HQ + MQ/(HQ+MQ+Fail)*100, 0)
+  ) %>%
+  kbl() %>%
+  kable_minimal(c("hover"))
+  
+```
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
 ```{r qc_summary_plot, message=FALSE, warning=FALSE, echo=FALSE, out.width = "100%"}
 cpqp1 <- plot_grid(
   cp1,
   qp1,
   ncol = 2,
   align = 'v',
-  axis = 'lr', 
-  labels = c("a", "b")
+  axis = 'lr'
   )
 
 cpqp1
@@ -813,19 +954,47 @@ cpqp1
 
 |   |   |
 |---|---|
-|HQ|< 200 N|
-|MQ|< 3000 N|
-|n_filter|>= 3000 N|
-|yield_filter|sample yield < `r yield_filter_factor`x negative control (max)|
+|HQ|< `r hq_n` N|
+|MQ|< `r mq_n` N|
+|n_filter|>= `r mq_n` N|
+|yield_filter|sample yield < `r yield_filter_factor`x negative control/unused (max)|
 |missing_filter|No aligned genome (missing or poor quality)|
 |mix_filter|> 3 ambiguous bases|
 |NC_pass|< 75% genome coverage|
 |NC_fail|> 75% genome coverage|
 |   |   |
 
-## Sample summary
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
+**Barcode IDs used for yield cut-off**
+
+```{r message=FALSE, warning=FALSE, echo=FALSE,}
+ycm %>%
+  mutate(
+    sample_name = ifelse(is.na(sample_name), "Unused", sample_name)
+  ) %>%
+    kbl() %>%
+    kable_minimal(c("hover")) 
+```
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
+## Sample summary list
 
 ---
+
+Summary list of all samples in the QC report. The list can be filtered and is searchable. For example search "`[batch_id]` Unused", to show all unused barcodes with data in a specific batch. The columns can be sorted by presseing the small arrows next to the column names.
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
 
 ```{r message=FALSE, warning=FALSE, echo=FALSE}
 # Barcode sample list
@@ -839,31 +1008,41 @@ seqsum_t2 <-
   ungroup() %>%
   set_names(c("Batch", "Barcode ID", "Barcode classification", "Yield (Mbp)", "Total reads (n)")) %>%
   left_join(
-    m %>% select(-sample_category, -treatment),
+    m %>% select(-sample_category),
     by = c("Batch" = "batch", "Barcode ID" = "barcode_id")
   )
   
-datatable(seqsum_t2)
+datatable(seqsum_t2, filter = 'top')
 ```
 
 **Column explanation**
 
 * Batch: Sequencing run batch.
 * Barcode ID: Barcode number from barcode01 to barcode96 as is standard output from MinKNOW.
-* Barcode classification: Barcode has been registered as `used` for a sample in the metadata og not `unused`. Data in unused barcodes should not occur.
+* Barcode classification: Barcode has been classified as `used` for a sample in the metadata or if not classified as `unused`. Data in unused barcodes should in general not occur.
 * Yield: Data yield assigned to a specific barcode.
 * Total reads: Total reads assigned to a specific barcode.
 * ...: Extra columns in the metadata sheet.
 
-The search bar can be used to filter the data. For example search "<batch_id> Unused", to show all unused barcodes with data in a specific batch.
-
-The columns can be sorted by presseing the small arrows next to the column names.
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
 
 ## Appendix
 
 ---
 
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
 ### Negative control summary
+
+The negative controls are key for the QC analysis as they indicate a data baseline and can hint a possible contamination and its source. Use at least 2 NC for each sequencing run.
+
+This summary provides a list of negative controls used in the analysed runs.
 
 ```{r message=FALSE, warning=FALSE, echo=FALSE}
 # Overall statistics
@@ -872,7 +1051,6 @@ cs <-
   filter(grepl("nc", str_to_lower(sample_name))) %>%
   transmute(
     batch,
-    treatment,
     barcode_id,
     sample_name,
     yield_bp = (yield_bp/1000000) %>% round(1),
@@ -892,7 +1070,7 @@ cs <-
 if(nrow(cs) != 0){
   cs %>%
     ungroup() %>%
-    select(treatment, sample_name, barcode_id, yield_bp, genome_coverage, classification, filter) %>%
+    select(batch, sample_name, barcode_id, yield_bp, genome_coverage, classification, filter) %>%
     set_names(c("Group", "Sample Name", "Barcode ID", "Yield (Mbp)", "Genome coverage (%)", "Variant", "QC status")) %>%
     kbl() %>%
     kable_minimal(c("hover")) %>%
@@ -906,6 +1084,10 @@ if(nrow(cs) != 0){
 }
 ```
 
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
 
 ```{r message=FALSE, warning=FALSE, include=FALSE}
 ## amplicon visualization track
@@ -969,6 +1151,11 @@ ap <- ggplot(
 
 ### Negative control coverage
 
+With sequencing there is always some data that is assigned to the wrong samples, and therefor we expect some data in the negative controls which we can use as a baseline. Data from the sequenced samples should exceed this baseline level with a defined factor (eg. 10x) for the samples to be trusted. 
+
+Contamination is seen as distinct data patterns, which can point to potential sources. 
+
+
 ```{r message=FALSE, warning=FALSE, echo=FALSE}
 # Control coverage plot
 control_n <-
@@ -987,7 +1174,7 @@ acny <-
 pcc <- ggplot(
   acny %>%
     filter(sample_category == "control") %>%
-    mutate(facet_id = paste(treatment, barcode_id, sep = "-")),
+    mutate(facet_id = paste(batch, barcode_id, sep = "-")),
   aes(
     x = start,
     xend = end,
@@ -1013,7 +1200,7 @@ pcc <- ggplot(
   ) +
   geom_text(
     data = cs %>%
-    mutate(facet_id = paste(treatment, barcode_id, sep = "-")),
+    mutate(facet_id = paste(batch, barcode_id, sep = "-")),
     aes(
       x = ref_length/2,
       xend = NULL,
@@ -1072,15 +1259,48 @@ pcc
 | All negative controls contaminated | Reagent contamination or poor handling. |
 |   |   |
 
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
+### Unused barcode overview
+
+Unused barcode information is available, when not all barcodes have been used and provides supporting information for the negative controls. In principle no data from unused barcodes should occur, but as with negative controls we expect a general bleed over that results in data also in unused barcodes. However, relative high data yield in unused barcodes indicate contamination.
+
+This table contains a list of all unused barcodes producing data.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+datatable(
+  seqsum_t2 %>%
+    filter(`Barcode classification` == "Unused") %>%
+    arrange(desc(`Yield (Mbp)`))
+    )
+```
+
 ### Sample absolute coverage overview
 
+Coverage across the sample consensus genomes can help diagnose issues with the library preparation. The most typical issues observed are:
+
+* Variant dependent amplicon dropout. Mutations in priming sites causes specific amplicons to drop-out.
+* PCR dependent amplicon dropout. The PCR amplification has completely or partially crashed causing multiple amplicons to dropout. The cause can be many but common for them is inoptimal priming conditions.
+* Pool dependent dropout. Same as above just for one of the two PCR reactions.
+* Low template concentration. Random dropout at any level. Usually accompanied with low data yield.
+
+The plot shows absolute coverage. Signals to look for are amplicon complete or partial dropouts which happens at a coverage of < 20 x.
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
 ```{r message=FALSE, warning=FALSE, include=FALSE}
-treatment_n <-
-  distinct(yf, treatment) %>%
+batch_n <-
+  distinct(yf, batch) %>%
   nrow()
 ```
 
-```{r message=FALSE, warning=FALSE, echo=FALSE, fig.height=3*treatment_n + 2}
+```{r message=FALSE, warning=FALSE, echo=FALSE, fig.height=5*batch_n + 2, out.width = "100%"}
 acny <-
   acn %>%
   left_join(
@@ -1115,7 +1335,7 @@ scp1 <- ggplot(
   ) +
   facet_grid(
     factor(
-      treatment,
+      batch,
       levels = yfo)~.
       ) +
   scale_x_continuous(
@@ -1142,7 +1362,7 @@ scp1ap <- plot_grid(
   scp1,
   ap,
   ncol = 1,
-  rel_heights = c(treatment_n*2/(treatment_n*2 + 1), 1/(treatment_n*2 + 1)),
+  rel_heights = c(batch_n*2/(batch_n*2 + 1), 1/(batch_n*2 + 1)),
   align = 'v',
   axis = 'lr'
   )
@@ -1152,21 +1372,31 @@ scp1ap
 
 **Coverage patterns**
 
-NB: Plot is only showing genomes with < 3000 Ns and the negative controls.
+NB: Plot is only showing genomes with < `r mq_n` Ns and the negative controls.
 
-* 1-2 amplicon dropouts. Indicates mutations in priming sites or reagent issues. Typically the amplicon coverage is dividede in two distributions.
-* >2 amplicon dropouts. Usually indicates sub-optimal PCR reaction conditions. Possible causes: error in reagent mixing/dispensing, lid problems or machine temperature control problems.
-* Amplicon pool coverage skew. One of the PCR reactions failed or worked sub-optimally.
+* `1-2` amplicon dropouts. Indicates mutations in priming sites or reagent issues. Typically the amplicon coverage is dividede in two distributions.
+* `>2` amplicon dropouts. Usually indicates low template concentration or sub-optimal PCR reaction conditions. Sub-optimal causes: error in reagent mixing/dispensing, lid problems or machine temperature control problems.
+* Amplicon pool coverage skew (every second amplicon has poor coverage). One of the PCR reactions failed or worked sub-optimally.
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
 
 ### Sample normalized coverage overview
 
-```{r message=FALSE, warning=FALSE, echo=FALSE, fig.height=3*treatment_n + 2}
+The plot shows normalized coverage. Signals to look for are amplicon complete or partial dropouts which typically happens at at  < 0.1 x normalized coverage. Poor normalized coverage does not necessarily lead to dropout, as it can be compensated by higher sequencing depth. However, data is wasted when amplicons have poor normalized coverage. The pattern of normalized coverage should stay the same across runs. If the pattern changes consistently this might indicate subtle changes to the library preparation or major shift in the variants sequenced. 
+
+```{r message=FALSE, warning=FALSE, echo=FALSE, fig.height=5*batch_n + 2, out.width = "100%"}
 pcny <-
   pcn %>%
   left_join(
     yf,
     .,
     by = c("batch", "barcode_id")
+  )  %>%
+  filter(
+    n_quality != "n_filter" | sample_category == "control"
   )
 
 scp2 <- ggplot(
@@ -1197,7 +1427,7 @@ scp2 <- ggplot(
   ) +
   facet_grid(
     factor(
-      treatment,
+      batch,
       levels = yfo)~.
       ) +
   scale_x_continuous(
@@ -1223,7 +1453,7 @@ scp2ap <- plot_grid(
   scp2,
   ap,
   ncol = 1,
-  rel_heights = c(treatment_n*2/(treatment_n*2 + 1), 1/(treatment_n*2 + 1)),
+  rel_heights = c(batch_n*2/(batch_n*2 + 1), 1/(batch_n*2 + 1)), 
   align = 'v',
   axis = 'lr'
   )
@@ -1231,11 +1461,24 @@ scp2ap <- plot_grid(
 scp2ap
 ```
 
+**Coverage patterns**
+
+NB: Plot is only showing genomes with < `r mq_n` Ns and the negative controls.
+
+* `1-2` amplicon dropouts. Indicates mutations in priming sites or reagent issues. Typically the amplicon coverage is dividede in two distributions.
+* `>2` amplicon dropouts. Usually indicates low template concentration or sub-optimal PCR reaction conditions. Possible causes: error in reagent mixing/dispensing, lid problems or machine temperature control problems.
+* Amplicon pool coverage skew. One of the PCR reactions failed or worked sub-optimally.
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
 ```{r message=FALSE, warning=FALSE, include=FALSE}
 pcny_sample <-
   yf %>%
   filter(filter %in% c("HQ", "MQ", "n_filter", "yield_filter")) %>%
-  group_by(treatment, filter) %>%
+  group_by(batch, filter) %>%
   slice_sample(n = 2, replace = F) %>%
   ungroup() %>%
   select(batch, barcode_id) %>%
@@ -1268,7 +1511,7 @@ scp3 <- ggplot(
   ) +
     facet_grid(
     factor(
-      treatment,
+      batch,
       levels = yfo)~.
       ) +
   scale_y_log10() +
@@ -1292,7 +1535,7 @@ scp3ap <- plot_grid(
   scp3,
   ap,
   ncol = 1,
-  rel_heights = c(treatment_n*2/(treatment_n*2 + 1), 1/(treatment_n*2 + 1)),
+  rel_heights = c(batch_n*2/(batch_n*2 + 1), 1/(batch_n*2 + 1)),
   align = 'v',
   axis = 'lr'
   )
@@ -1302,6 +1545,15 @@ scp3ap
 
 
 ### Overview of SNPs and ambiguous bases
+
+SNPs pattern trees can help identify and troubleshoot mixed samples (samples contaminated by other samples). SNP patterns can also help identify systematic technical artefacts. Technical artefacts usually occur due to sub-optimal mapping around deletion in the amplicon terminals. A common problem is the same base(s) flanking a deletion as was deleted. When mapping to a reference these bases can map multiple places, resulting in erroneous consensus calling and insert artefacts. 
+
+NB: Plot is only showing genomes with < 7000 Ns. 
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
 
 ```{r message=FALSE, warning=FALSE, echo=FALSE}
 # Determine SNP frequencies from HQ/MQ genomes
@@ -1457,7 +1709,10 @@ for (i in 1:length(tree)){
       position %in% snv_filter$position & batch == bn & barcode_id %in% bt$tip.label
     ) %>%
     select(barcode_id, position, snp_var) %>%
+    group_by(barcode_id) %>%
+    complete(position = snv_filter$position) %>%
     mutate(snp_var = ifelse(is.na(snp_var), "ref", snp_var)) %>%
+    ungroup() %>%
     pivot_wider(names_from = "position", values_from = "snp_var", values_fill = "ref")
   
   bthf <- bth %>%
@@ -1471,33 +1726,35 @@ for (i in 1:length(tree)){
     select(-batch)
   
   
-  p <- ggtree(bt, branch.length = "none") %<+% tm %>%
+  p <- ggtree(bt) %<+% tm %>%
     {.} +
     geom_treescale() +
     geom_tiplab(
-      align = T,
+      align = F,
       linesize = .25,
       size = 2,
-      aes(color = n_quality),
+      aes(color = filter, label = paste(label, classification, sep = " ")),
       offset = 0.00016,
       fontface = "bold",
-      hjust = 1, 
+      hjust = 1.2, 
       vjust = 0
     ) +
     scale_color_manual(
-      breaks = c("HQ", "MQ"),
-      values = c("#00A087FF", "#4DBBD5FF"),
-      name = "Genome Quality"
+      breaks = yfl,
+      values = yfc,
+      name = "Filter", 
+      drop = F
     ) +
     guides(
       colour = guide_legend(override.aes = list(size = 4))
     ) +
     geom_tippoint(
-      aes(color = n_quality),
+      aes(color = factor(filter, levels = yfl)),
       size = 1
     ) +
     theme(
-      legend.position = "bottom")
+      legend.position = "bottom"
+      )
   
   # Build plot
   if (length(snv_filter) > 0){
@@ -1509,7 +1766,7 @@ for (i in 1:length(tree)){
       colnames_angle = 90,
       hjust = 1,
       font.size = 2,
-      width = 4
+      width = 5
     ) +
       scale_fill_manual(
         values = c("#33a02c", "#1f78b4", "grey30", "#de2d26", "grey80", "orange", "purple", "greenyellow", "white"),  
@@ -1567,10 +1824,165 @@ cpqp1
 | Large sections of missing bases (N) | Amplicon drop-out. For more complete picture of amplicon dropout inspect the coverage overviews. |
 | Consistent medium quality within specific clades of the tree | Indicates variant specific bias. Usually amplicon drop-out due to mutation in priming site. |
 
+### Sample plate overview
 
-## Export HQ and MQ genomes
+Plate view is only applicable for samples prepared with barcode expansion kits where the barcodes (01 - 96) are placed in a plate column-wise. The benefit of the plate view is that inconsistencies in yield or quality can be put in context of the physical placement og the samples during library preparation.
+  
+  
+**Yield plate view**
 
-```{r}
+```{r message=FALSE, warning=FALSE, echo=FALSE, out.width = "80%"}
+plate_view <- 
+  tibble(
+    barcode_id = paste("barcode", str_pad(1:96, 2, "left", 0), sep = "") %>% rep(batch_n),
+    barcode_nr = 1:96 %>% rep(batch_n),
+    row_id = rep(c("A", "B", "C", "D", "E", "F", "G", "H"), 12) %>% rep(batch_n),
+    col_id = rep(1:12, each = 8) %>% rep(batch_n),
+    batch = unique(yf$batch) %>% rep(each = 96)
+  ) 
+  
+
+plate_yield <- 
+  seqsum_t2 %>%
+  filter(`Barcode ID` != "unclassified") %>%
+  left_join(
+    plate_view,
+    by = c("Barcode ID" = "barcode_id", "Batch" = "batch")
+  )
+
+plate_meta <- 
+  yf %>%
+  left_join(
+    plate_view,
+    by = c("barcode_id", "batch")
+  ) %>%
+  mutate(
+    filter_plot = 
+      case_when(
+        sample_category == "control" ~ "NC",
+        T ~ "Used"
+      ),
+    Batch = batch
+  )
+
+ggplot(
+  plate_yield,
+  aes(
+    x = as.integer(col_id),
+    y = factor(row_id, levels = LETTERS[8:1]),
+    fill = `Yield (Mbp)`
+  )
+) +
+  geom_tile() +
+  geom_tile(
+    data = plate_view,
+    color = "grey",
+    fill = NA
+  ) +
+  geom_tile(
+    data = plate_meta,
+    aes(color = filter_plot),
+    fill = NA
+  ) +
+  geom_text(aes(label = `Yield (Mbp)`), na.value = "NA", size = 2) +
+  facet_wrap(facets = vars(Batch), ncol = 1) +
+  scale_x_discrete("Columns", breaks = 1:12, limits = c(1:12)) +
+  scale_fill_gradientn(
+    colours = c("white", "#feb24c", "#f03b20"),
+    values = c(0, 10/100, 50/100, 1),
+    na.value = "#f03b20",
+    breaks = c(1, 25, 50, 75, 100),
+    limits = c(0, 100)
+    ) +
+  scale_color_manual(
+    values = c("Black", "Red"),
+    breaks = c("Used", "NC"),
+    name = "Sample category"
+  ) +
+  labs(
+    x = "Plate columns",
+    y = "Plate rows"
+  )
+```
+
+**QC plate view**
+
+```{r message=FALSE, warning=FALSE, echo=FALSE, out.width = "80%"}
+ggplot(
+  plate_meta,
+  aes(
+    x = as.integer(col_id),
+    y = factor(row_id, levels = LETTERS[8:1]),
+    fill = filter
+  )
+) +
+  geom_tile() +
+  geom_tile(
+    data = plate_view,
+    color = "grey",
+    fill = NA
+  ) +
+  geom_tile(
+    data = plate_meta,
+    color = "Black",
+    fill = NA
+  ) +
+  facet_wrap(facets = vars(Batch), ncol = 1) +
+  scale_x_discrete("Columns", breaks = 1:12, limits = c(1:12)) +
+  scale_fill_manual(
+    values = yfc,
+    breaks = yfl,
+    drop = FALSE
+  ) +
+  labs(
+    x = "Plate columns",
+    y = "Plate rows"
+  )
+```
+
+### Concentration, yield QC plot
+
+If template concentration is provided in the metadata this plot will be generated. Template concentration can be eg. known copy numbers from dilutions, Ct values or library concentrations. The column designation should be `template_conc`.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE, eval = ("template_conc" %in% colnames(m))}
+ggplot(
+  left_join(
+    yf,
+    seqsum_t2 %>% select(-sample_name, - template_conc),
+    by = c("barcode_id" = "Barcode ID", "batch" = "Batch")
+  ),
+  aes(
+    x = template_conc,
+    y = `Yield (Mbp)`,
+    color = filter
+  )
+) +
+  geom_point() +
+    facet_wrap(
+      facets = vars(batch),
+      ncol = 1,
+      scales = "free"
+      ) +
+  scale_color_manual(
+    values = yfc,
+    breaks = yfl,
+    drop = FALSE
+  ) +
+  labs(
+    x = "Template concentration",
+    y = "Yield (Mbp)"
+  ) +
+  theme_bw()
+
+```
+
+
+
+## Genome and metadata export
+
+Export genomes and metadata based on QC filters. HQ/MQ genomes and metadata will be exported as `genome_pass.fa` and `metadata_pass.tsv`, where failed genomes and metadata will be exported as `genome_fail.fa` and `metadata_fail.tsv`.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
 # Export metadata for MQ/HQ genomes
 me <- yf %>%
   filter(filter %in% c("HQ", "MQ")) %>%
@@ -1582,9 +1994,30 @@ me <- yf %>%
     scorpio_lineage
   )
 
-write_tsv(me, "metadata_export.tsv")
+write_tsv(me, "metadata_pass.tsv")
 
 s[paste(me$batch, ".", me$barcode_id, sep = "")] %>%
-  writeXStringSet("consensus_export.fa")
+  writeXStringSet("genome_pass.fa")
+
+# Export metadata for failed genomes
+mef <- yf %>%
+  filter(!(filter %in% c("HQ", "MQ"))) %>%
+  select(
+    batch,
+    barcode_id,
+    sample_name,
+    pango_lineage,
+    scorpio_lineage
+  )
+
+write_tsv(mef, "metadata_fail.tsv")
+
+s[paste(mef$batch, ".", mef$barcode_id, sep = "")] %>%
+  writeXStringSet("genome_fail.fa")
+
+tibble(`Data export` = list.files(getwd(), pattern = "genome_|metadata_", full.names = T)) %>%
+  kbl() %>%
+  kable_minimal(c("hover")) 
+  
 ```
 
