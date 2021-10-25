@@ -28,9 +28,9 @@ if(file.exists("data.RData")){
 ```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
 # Report settings
 batch_dir <- rstudioapi::selectDirectory(path = getwd())
-yield_filter_factor <- 5
+yield_filter_factor <- 10
 hq_n <- 200
-mq_n <- 6000
+mq_n <- 3000
 ```
 
 ```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
