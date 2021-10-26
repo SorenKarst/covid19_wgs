@@ -396,7 +396,7 @@ s <-
 ```
 
 ```{r message=FALSE, warning=FALSE, include=FALSE, eval = use_preprocessed_data}
-#Import consensus sequences
+#Import batch specifications
 spec_l <- list.files(
   path = paste(batch_dir, "/", batch_list, sep = ""),
   pattern = "^specifications.tsv",
@@ -754,6 +754,8 @@ ytcf <-
   {if(nrow(.) == 0){
     tibble(
       batch = unique(ytc$batch),
+      barcode_id = NA,
+      total_yield_bp = 0,
       yield_cutoff_unused = 0
     )
   } else .}
@@ -778,6 +780,9 @@ yc <-
   {if(nrow(.) == 0){
     tibble(
       batch = unique(y$batch),
+      barcode_id = NA,
+      sample_name = NA,
+      yield_bp = 0,
       yield_cutoff = 0
     )
   } else .}
@@ -1766,7 +1771,7 @@ for (i in 1:length(tree)){
       colnames_angle = 90,
       hjust = 1,
       font.size = 2,
-      width = 5
+      width = 3
     ) +
       scale_fill_manual(
         values = c("#33a02c", "#1f78b4", "grey30", "#de2d26", "grey80", "orange", "purple", "greenyellow", "white"),  
@@ -1994,10 +1999,13 @@ me <- yf %>%
     scorpio_lineage
   )
 
-write_tsv(me, "metadata_pass.tsv")
+if(nrow(me) > 0){
+  write_tsv(me, "metadata_pass.tsv")
+  
+  s[paste(me$batch, ".", me$barcode_id, sep = "")] %>%
+    writeXStringSet("genome_pass.fa")  
+}
 
-s[paste(me$batch, ".", me$barcode_id, sep = "")] %>%
-  writeXStringSet("genome_pass.fa")
 
 # Export metadata for failed genomes
 mef <- yf %>%
@@ -2010,10 +2018,12 @@ mef <- yf %>%
     scorpio_lineage
   )
 
-write_tsv(mef, "metadata_fail.tsv")
-
-s[paste(mef$batch, ".", mef$barcode_id, sep = "")] %>%
-  writeXStringSet("genome_fail.fa")
+if(nrow(mef) > 0){
+  write_tsv(mef, "metadata_fail.tsv")
+  
+  s[paste(mef$batch, ".", mef$barcode_id, sep = "")] %>%
+    writeXStringSet("genome_fail.fa")
+}
 
 tibble(`Data export` = list.files(getwd(), pattern = "genome_|metadata_", full.names = T)) %>%
   kbl() %>%
