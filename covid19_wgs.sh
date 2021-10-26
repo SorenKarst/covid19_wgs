@@ -102,7 +102,7 @@ case $PROTOCOL in
 esac
 
 # Setup analysis folder
-PWD=$(pwd)
+ANALYSIS_DIR=$(readlink -f $ANALYSIS_DIR)
 mkdir -p $ANALYSIS_DIR
 
 # Artic version
@@ -155,7 +155,7 @@ parallel \
   --normalise 100 \\
   --threads 1 \\
   --scheme-directory $CONDA_DIR/covid19_wgs/artic-ncov2019/primer_schemes \\
-  --read-file $PWD/{} \\
+  --read-file {} \\
   nCoV-2019/$PRIMER_SCHEME {bid}"
 
 find \
