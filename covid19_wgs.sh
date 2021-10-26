@@ -103,7 +103,7 @@ esac
 
 # Setup analysis folder
 PWD=$(pwd)
-mkdir $ANALYSIS_DIR
+mkdir -p $ANALYSIS_DIR
 
 # Artic version
 ARTIC_VERSION=$(artic -v)
